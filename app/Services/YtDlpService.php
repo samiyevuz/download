@@ -62,7 +62,7 @@ class YtDlpService
                 '--no-progress',
                 '--ignore-errors',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
-                '--format', 'best[ext=mp4]/best[ext=webm]/best/bestvideo+bestaudio/best',
+                '--format', 'best',
                 $url, // URL is already validated and sanitized
             ];
 
