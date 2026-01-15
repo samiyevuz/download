@@ -22,6 +22,12 @@ class DownloadMediaJob implements ShouldQueue
     public int $timeout = 60;
     public int $tries = 2;
     public int $maxExceptions = 1;
+    
+    /**
+     * Maximum memory usage in MB
+     * Job will fail if memory exceeds this limit
+     */
+    public int $memory = 512; // 512MB per job
 
     /**
      * Create a new job instance.
@@ -41,8 +47,19 @@ class DownloadMediaJob implements ShouldQueue
     {
         $tempDir = null;
         $downloadedFiles = [];
+        $startMemory = memory_get_usage(true);
 
         try {
+            // Set memory limit for this job
+            $memoryLimit = $this->memory * 1024 * 1024; // Convert MB to bytes
+            ini_set('memory_limit', $memoryLimit . 'b');
+            
+            // Register shutdown function to ensure cleanup even on fatal errors
+            register_shutdown_function(function () use (&$tempDir) {
+                if ($tempDir && is_dir($tempDir)) {
+                    $this->cleanup($tempDir);
+                }
+            });
             // Send "Downloading..." message at the start
             $telegramService->sendMessage(
                 $this->chatId,
@@ -138,12 +155,25 @@ class DownloadMediaJob implements ShouldQueue
                 ]);
             }
 
+            $endMemory = memory_get_usage(true);
+            $memoryUsed = ($endMemory - $startMemory) / 1024 / 1024; // MB
+
             Log::info('Media download job completed successfully', [
                 'chat_id' => $this->chatId,
                 'url' => $this->url,
                 'videos_count' => count($videos),
                 'images_count' => count($images),
+                'memory_used_mb' => round($memoryUsed, 2),
             ]);
+            
+            // Check memory usage
+            if ($memoryUsed > ($this->memory * 0.9)) {
+                Log::warning('Job memory usage high', [
+                    'chat_id' => $this->chatId,
+                    'memory_used_mb' => round($memoryUsed, 2),
+                    'memory_limit_mb' => $this->memory,
+                ]);
+            }
 
         } catch (\Exception $e) {
             Log::error('Media download job failed', [
@@ -183,6 +213,7 @@ class DownloadMediaJob implements ShouldQueue
 
     /**
      * Clean up temporary files and directory
+     * Guaranteed to execute even on errors
      *
      * @param string|null $directory
      * @return void
@@ -193,30 +224,80 @@ class DownloadMediaJob implements ShouldQueue
             return;
         }
 
-        try {
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
-                \RecursiveIteratorIterator::CHILD_FIRST
-            );
+        $maxAttempts = 3;
+        $attempt = 0;
+        $cleaned = false;
 
-            foreach ($iterator as $file) {
-                if ($file->isDir()) {
-                    rmdir($file->getPathname());
+        while ($attempt < $maxAttempts && !$cleaned) {
+            $attempt++;
+            
+            try {
+                // First, try to remove all files
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::CHILD_FIRST
+                );
+
+                $errors = [];
+                foreach ($iterator as $file) {
+                    try {
+                        if ($file->isDir()) {
+                            @rmdir($file->getPathname());
+                        } else {
+                            @unlink($file->getPathname());
+                        }
+                    } catch (\Exception $e) {
+                        $errors[] = $file->getPathname() . ': ' . $e->getMessage();
+                    }
+                }
+
+                // Try to remove the directory itself
+                if (@rmdir($directory)) {
+                    $cleaned = true;
+                    Log::info('Temporary files cleaned up', [
+                        'directory' => $directory,
+                        'attempt' => $attempt,
+                    ]);
                 } else {
-                    unlink($file->getPathname());
+                    // Directory might still have files, try again
+                    if ($attempt < $maxAttempts) {
+                        usleep(100000); // Wait 0.1 seconds
+                    }
+                }
+
+                // Log any errors but don't fail
+                if (!empty($errors) && $attempt === $maxAttempts) {
+                    Log::warning('Some files could not be cleaned up', [
+                        'directory' => $directory,
+                        'errors' => $errors,
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::error('Cleanup attempt failed', [
+                    'directory' => $directory,
+                    'attempt' => $attempt,
+                    'error' => $e->getMessage(),
+                ]);
+                
+                if ($attempt < $maxAttempts) {
+                    usleep(200000); // Wait 0.2 seconds before retry
                 }
             }
+        }
 
-            rmdir($directory);
-
-            Log::info('Temporary files cleaned up', [
-                'directory' => $directory,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to cleanup temporary files', [
-                'directory' => $directory,
-                'error' => $e->getMessage(),
-            ]);
+        // Final fallback: try to remove directory even if not empty (system-dependent)
+        if (!$cleaned && is_dir($directory)) {
+            @exec("rm -rf " . escapeshellarg($directory) . " 2>&1", $output, $returnCode);
+            if ($returnCode === 0) {
+                Log::info('Directory removed using fallback method', [
+                    'directory' => $directory,
+                ]);
+            } else {
+                Log::error('Failed to cleanup directory after all attempts', [
+                    'directory' => $directory,
+                    'output' => $output,
+                ]);
+            }
         }
     }
 

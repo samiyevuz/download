@@ -68,27 +68,57 @@ class YtDlpService
                 $url, // URL is already validated and sanitized
             ];
 
-            // Create process
+            // Create process with proper isolation
             $process = new Process($arguments);
             $process->setTimeout($this->timeout);
             $process->setIdleTimeout($this->timeout);
+            
+            // Set working directory to output directory for isolation
+            $process->setWorkingDirectory($outputDir);
+            
+            // Prevent process from inheriting environment variables that could cause issues
+            $process->setEnv([]);
 
             Log::info('Starting yt-dlp download', [
                 'url' => $url,
                 'output_dir' => $outputDir,
+                'timeout' => $this->timeout,
             ]);
 
-            // Execute process
-            $process->run();
+            try {
+                // Execute process
+                $process->run(function ($type, $buffer) {
+                    // Log output in real-time for debugging (only in verbose mode)
+                    if (config('app.debug', false)) {
+                        Log::debug('yt-dlp output', [
+                            'type' => $type === Process::ERR ? 'stderr' : 'stdout',
+                            'buffer' => substr($buffer, 0, 500), // Limit log size
+                        ]);
+                    }
+                });
 
-            if (!$process->isSuccessful()) {
-                $errorOutput = $process->getErrorOutput();
-                Log::error('yt-dlp download failed', [
-                    'url' => $url,
-                    'exit_code' => $process->getExitCode(),
-                    'error' => $errorOutput,
-                ]);
-                throw new \RuntimeException('Download failed: ' . $errorOutput);
+                if (!$process->isSuccessful()) {
+                    $errorOutput = $process->getErrorOutput();
+                    Log::error('yt-dlp download failed', [
+                        'url' => $url,
+                        'exit_code' => $process->getExitCode(),
+                        'error' => $errorOutput,
+                    ]);
+                    throw new \RuntimeException('Download failed: ' . $errorOutput);
+                }
+            } catch (ProcessTimedOutException $e) {
+                // Force kill the process on timeout
+                $this->forceKillProcess($process);
+                throw $e;
+            } catch (\Exception $e) {
+                // Ensure process is terminated on any exception
+                $this->forceKillProcess($process);
+                throw $e;
+            } finally {
+                // Always ensure process is stopped
+                if ($process->isRunning()) {
+                    $this->forceKillProcess($process);
+                }
             }
 
             // Find downloaded files
@@ -120,6 +150,48 @@ class YtDlpService
                 'error' => $e->getMessage(),
             ]);
             throw $e;
+        }
+    }
+
+    /**
+     * Force kill a process and all its children
+     * Prevents zombie processes
+     *
+     * @param Process $process
+     * @return void
+     */
+    private function forceKillProcess(Process $process): void
+    {
+        try {
+            if ($process->isRunning()) {
+                $pid = $process->getPid();
+                
+                if ($pid) {
+                    Log::warning('Force killing yt-dlp process', ['pid' => $pid]);
+                    
+                    // Kill process group to ensure all children are terminated
+                    if (function_exists('posix_kill')) {
+                        // Send SIGTERM first (graceful)
+                        @posix_kill($pid, SIGTERM);
+                        usleep(500000); // Wait 0.5 seconds
+                        
+                        // Force kill if still running
+                        if ($process->isRunning()) {
+                            @posix_kill($pid, SIGKILL);
+                        }
+                    } else {
+                        // Fallback for Windows or systems without posix
+                        $process->stop(5, SIGKILL);
+                    }
+                } else {
+                    // Process not started or already finished
+                    $process->stop(5, SIGKILL);
+                }
+            }
+        } catch (\Exception $e) {
+            Log::error('Failed to kill process', [
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -164,18 +236,33 @@ class YtDlpService
                 $url, // URL is already validated and sanitized
             ];
 
-            // Create process
+            // Create process with proper isolation
             $process = new Process($arguments);
             $process->setTimeout($this->timeout);
             $process->setIdleTimeout($this->timeout);
+            $process->setWorkingDirectory($outputDir);
+            $process->setEnv([]);
 
             Log::info('Starting yt-dlp image download', [
                 'url' => $url,
                 'output_dir' => $outputDir,
+                'timeout' => $this->timeout,
             ]);
 
-            // Execute process
-            $process->run();
+            try {
+                // Execute process
+                $process->run();
+            } catch (ProcessTimedOutException $e) {
+                $this->forceKillProcess($process);
+                throw $e;
+            } catch (\Exception $e) {
+                $this->forceKillProcess($process);
+                throw $e;
+            } finally {
+                if ($process->isRunning()) {
+                    $this->forceKillProcess($process);
+                }
+            }
 
             if (!$process->isSuccessful()) {
                 $errorOutput = $process->getErrorOutput();
@@ -239,10 +326,22 @@ class YtDlpService
 
             $process = new Process($arguments);
             $process->setTimeout(30);
-            $process->run();
+            $process->setIdleTimeout(30);
+            $process->setEnv([]);
 
-            if (!$process->isSuccessful()) {
-                throw new \RuntimeException('Failed to get media info');
+            try {
+                $process->run();
+                
+                if (!$process->isSuccessful()) {
+                    throw new \RuntimeException('Failed to get media info');
+                }
+            } catch (\Exception $e) {
+                $this->forceKillProcess($process);
+                throw $e;
+            } finally {
+                if ($process->isRunning()) {
+                    $this->forceKillProcess($process);
+                }
             }
 
             $output = $process->getOutput();
