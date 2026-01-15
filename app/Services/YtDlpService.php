@@ -154,8 +154,9 @@ class YtDlpService
                         'url' => $url,
                         'exit_code' => $process->getExitCode(),
                         'error' => $errorOutput,
-                        'output' => $stdOutput,
-                        'command' => implode(' ', $arguments),
+                        'output' => substr($stdOutput, 0, 500),
+                        'command' => implode(' ', array_slice($arguments, 0, 3)) . '...',
+                        'full_command' => implode(' ', $arguments),
                     ]);
                     throw new \RuntimeException('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
                 }
