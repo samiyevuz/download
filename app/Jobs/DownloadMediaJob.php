@@ -51,8 +51,7 @@ class DownloadMediaJob implements ShouldQueue
 
         try {
             // Set memory limit for this job
-            $memoryLimit = $this->memory * 1024 * 1024; // Convert MB to bytes
-            ini_set('memory_limit', $memoryLimit . 'b');
+            ini_set('memory_limit', $this->memory . 'M');
             
             // Register shutdown function to ensure cleanup even on fatal errors
             register_shutdown_function(function () use (&$tempDir) {
