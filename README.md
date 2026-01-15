@@ -1,59 +1,199 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Instagram & TikTok Downloader Telegram Bot
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A production-ready Telegram bot built with Laravel that downloads videos and images from Instagram and TikTok using yt-dlp.
 
-## About Laravel
+## 🚀 Features
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- ✅ **Instagram Support**: Download videos and images from Instagram posts
+- ✅ **TikTok Support**: Download videos from TikTok
+- ✅ **Carousel Posts**: Handles multiple images in carousel posts
+- ✅ **Queue-Based Processing**: Async downloads using Laravel queues
+- ✅ **Webhook Integration**: Fast response times with Telegram webhooks
+- ✅ **Error Handling**: Comprehensive error handling and user-friendly messages
+- ✅ **Automatic Cleanup**: Temporary files are automatically deleted
+- ✅ **Production Ready**: Stable, fault-tolerant, and scalable
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## 📋 Requirements
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+- PHP 8.2+
+- Laravel 12.x
+- Composer
+- yt-dlp (latest version)
+- Redis or Database for queues
+- Telegram Bot Token
 
-## Learning Laravel
+## 🛠️ Quick Start
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+### 1. Installation
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+```bash
+# Install dependencies
+composer install
 
-## Laravel Sponsors
+# Copy environment file
+cp .env.example .env
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+# Generate application key
+php artisan key:generate
 
-### Premium Partners
+# Run migrations
+php artisan migrate
+```
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+### 2. Configuration
 
-## Contributing
+Edit `.env` file:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+QUEUE_CONNECTION=redis  # or 'database'
+YT_DLP_PATH=yt-dlp
+DOWNLOAD_TIMEOUT=60
+```
 
-## Code of Conduct
+### 3. Install yt-dlp
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+# Using pip (recommended)
+sudo pip3 install yt-dlp
 
-## Security Vulnerabilities
+# Verify installation
+yt-dlp --version
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+### 4. Start Queue Worker
 
-## License
+```bash
+# Development
+php artisan queue:work --tries=2 --timeout=60
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+# Production (use Supervisor - see DEPLOYMENT.md)
+```
+
+### 5. Set Webhook
+
+```bash
+curl -X POST "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://YOUR_DOMAIN.com/api/telegram/webhook"}'
+```
+
+## 📖 Usage
+
+1. Start a conversation with your bot on Telegram
+2. Send `/start` to receive welcome message
+3. Send an Instagram or TikTok link
+4. Bot will download and send the media back
+
+## 🏗️ Architecture
+
+```
+app/
+├── Http/
+│   └── Controllers/
+│       └── TelegramWebhookController.php  # Webhook handler
+├── Jobs/
+│   └── DownloadMediaJob.php               # Async download job
+├── Services/
+│   ├── TelegramService.php                # Telegram API client
+│   └── YtDlpService.php                   # yt-dlp wrapper
+└── Validators/
+    └── UrlValidator.php                    # URL validation
+
+config/
+└── telegram.php                            # Bot configuration
+
+routes/
+└── api.php                                 # API routes
+```
+
+## 🔒 Security Features
+
+- ✅ URL validation and sanitization
+- ✅ Command injection prevention (Symfony Process)
+- ✅ UUID-based temporary directories
+- ✅ Automatic file cleanup
+- ✅ Domain whitelist validation
+
+## 📝 Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather | Yes |
+| `QUEUE_CONNECTION` | Queue driver (redis/database) | Yes |
+| `YT_DLP_PATH` | Path to yt-dlp binary | No (default: yt-dlp) |
+| `DOWNLOAD_TIMEOUT` | Download timeout in seconds | No (default: 60) |
+
+## 🚀 Production Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete production deployment guide including:
+
+- Server setup
+- Queue worker configuration
+- Webhook setup
+- SSL/HTTPS configuration
+- Monitoring and maintenance
+- Troubleshooting
+
+## 📊 Queue Configuration
+
+The bot uses Laravel queues for async processing:
+
+- **Queue Name**: `downloads`
+- **Max Tries**: 2
+- **Timeout**: 60 seconds
+- **Driver**: Redis (recommended) or Database
+
+## 🐛 Error Handling
+
+The bot handles various error scenarios:
+
+- Invalid URLs → User-friendly error message
+- Private posts → Error message
+- Download failures → Error message with logging
+- Timeout errors → Automatic retry
+- Telegram API errors → Logged and handled gracefully
+
+## 📁 File Structure
+
+```
+storage/
+└── app/
+    └── temp/
+        └── downloads/          # Temporary download directory
+            └── {uuid}/         # UUID-based job directories
+```
+
+Temporary files are automatically cleaned up after sending to user.
+
+## 🔧 Development
+
+```bash
+# Run queue worker
+php artisan queue:work
+
+# Clear cache
+php artisan config:clear
+php artisan cache:clear
+
+# View logs
+tail -f storage/logs/laravel.log
+```
+
+## 📄 License
+
+MIT License
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## ⚠️ Disclaimer
+
+This bot is for educational purposes. Ensure you comply with:
+- Instagram Terms of Service
+- TikTok Terms of Service
+- Copyright laws in your jurisdiction
+- Telegram Bot API Terms of Service
+
+Use responsibly and respect content creators' rights.

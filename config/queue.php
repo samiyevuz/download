@@ -73,6 +73,35 @@ return [
             'after_commit' => false,
         ],
 
+        /*
+        |--------------------------------------------------------------------------
+        | Dedicated Queue Connections for Telegram Bot
+        |--------------------------------------------------------------------------
+        |
+        | Separate queues for different job types to optimize processing:
+        | - downloads: Heavy yt-dlp operations (longer timeout, fewer workers)
+        | - telegram: Light Telegram API calls (quick processing, more workers)
+        |
+        */
+
+        'redis-downloads' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'downloads',
+            'retry_after' => 120, // Longer timeout for download jobs
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        'redis-telegram' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'telegram',
+            'retry_after' => 30, // Shorter timeout for Telegram API calls
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
         'deferred' => [
             'driver' => 'deferred',
         ],
