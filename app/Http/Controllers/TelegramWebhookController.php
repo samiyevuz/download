@@ -76,11 +76,20 @@ class TelegramWebhookController extends Controller
 
         // Handle /start command
         if ($text === '/start') {
-            // Dispatch welcome message asynchronously to avoid blocking webhook
-            \App\Jobs\SendTelegramMessageJob::dispatch(
-                $chatId,
-                "👋 Welcome!\nSend an Instagram or TikTok link and I will download the video or images for you 🚀"
-            )->onQueue('telegram');
+            // Send welcome message directly (non-blocking via queue job)
+            try {
+                \App\Jobs\SendTelegramMessageJob::dispatch(
+                    $chatId,
+                    "👋 Welcome!\nSend an Instagram or TikTok link and I will download the video or images for you 🚀"
+                )->onQueue('telegram');
+            } catch (\Exception $e) {
+                // Fallback: send directly if queue fails
+                Log::warning('Failed to dispatch welcome message job', [
+                    'chat_id' => $chatId,
+                    'error' => $e->getMessage(),
+                ]);
+                // Don't block webhook, just log the error
+            }
             return;
         }
 
