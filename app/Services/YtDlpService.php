@@ -6,6 +6,13 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
+if (!function_exists('command_exists')) {
+    function command_exists($command) {
+        $which = shell_exec("which $command 2>/dev/null");
+        return !empty($which);
+    }
+}
+
 /**
  * yt-dlp Service for downloading media from Instagram and TikTok
  */
@@ -68,6 +75,48 @@ class YtDlpService
                 $url, // URL is already validated and sanitized
             ];
 
+            // Verify and resolve yt-dlp path
+            $ytDlpPath = $this->ytDlpPath;
+            
+            // Check if path is absolute and exists
+            if (!file_exists($ytDlpPath) || !is_executable($ytDlpPath)) {
+                // Try to find yt-dlp in PATH
+                $whichYtDlp = trim(shell_exec('which yt-dlp 2>/dev/null') ?: '');
+                if ($whichYtDlp && file_exists($whichYtDlp) && is_executable($whichYtDlp)) {
+                    $ytDlpPath = $whichYtDlp;
+                    Log::info('yt-dlp found in PATH', ['path' => $ytDlpPath]);
+                } else {
+                    // Try common paths
+                    $commonPaths = [
+                        '/usr/local/bin/yt-dlp',
+                        '/usr/bin/yt-dlp',
+                        '/snap/bin/yt-dlp',
+                        getenv('HOME') . '/bin/yt-dlp',
+                        '/var/www/sardor/data/bin/yt-dlp',
+                    ];
+                    
+                    foreach ($commonPaths as $commonPath) {
+                        if (file_exists($commonPath) && is_executable($commonPath)) {
+                            $ytDlpPath = $commonPath;
+                            Log::info('yt-dlp found in common path', ['path' => $ytDlpPath]);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Final check
+            if (!file_exists($ytDlpPath) || !is_executable($ytDlpPath)) {
+                Log::error('yt-dlp not found or not executable', [
+                    'configured_path' => $this->ytDlpPath,
+                    'resolved_path' => $ytDlpPath,
+                ]);
+                throw new \RuntimeException("yt-dlp not found or not executable at: {$ytDlpPath}");
+            }
+
+            // Update arguments with correct path
+            $arguments[0] = $ytDlpPath;
+
             // Create process with proper isolation
             $process = new Process($arguments);
             $process->setTimeout($this->timeout);
@@ -76,43 +125,56 @@ class YtDlpService
             // Set working directory to output directory for isolation
             $process->setWorkingDirectory($outputDir);
             
-            // Prevent process from inheriting environment variables that could cause issues
-            $process->setEnv([]);
+            // Keep PATH environment variable (needed for yt-dlp dependencies)
+            $env = ['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin'];
+            $process->setEnv($env);
 
             Log::info('Starting yt-dlp download', [
                 'url' => $url,
                 'output_dir' => $outputDir,
                 'timeout' => $this->timeout,
+                'yt_dlp_path' => $ytDlpPath,
             ]);
 
             try {
                 // Execute process
-                $process->run(function ($type, $buffer) {
-                    // Log output in real-time for debugging (only in verbose mode)
-                    if (config('app.debug', false)) {
-                        Log::debug('yt-dlp output', [
-                            'type' => $type === Process::ERR ? 'stderr' : 'stdout',
-                            'buffer' => substr($buffer, 0, 500), // Limit log size
-                        ]);
-                    }
+                $process->run(function ($type, $buffer) use ($url) {
+                    // Log output in real-time for debugging
+                    Log::debug('yt-dlp output', [
+                        'url' => $url,
+                        'type' => $type === Process::ERR ? 'stderr' : 'stdout',
+                        'buffer' => substr($buffer, 0, 1000), // Limit log size
+                    ]);
                 });
 
                 if (!$process->isSuccessful()) {
                     $errorOutput = $process->getErrorOutput();
+                    $stdOutput = $process->getOutput();
                     Log::error('yt-dlp download failed', [
                         'url' => $url,
                         'exit_code' => $process->getExitCode(),
                         'error' => $errorOutput,
+                        'output' => $stdOutput,
+                        'command' => implode(' ', $arguments),
                     ]);
-                    throw new \RuntimeException('Download failed: ' . $errorOutput);
+                    throw new \RuntimeException('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
                 }
             } catch (ProcessTimedOutException $e) {
                 // Force kill the process on timeout
                 $this->forceKillProcess($process);
-                throw $e;
+                Log::error('yt-dlp download timeout', [
+                    'url' => $url,
+                    'timeout' => $this->timeout,
+                ]);
+                throw new \RuntimeException('Download timeout after ' . $this->timeout . ' seconds');
             } catch (\Exception $e) {
                 // Ensure process is terminated on any exception
                 $this->forceKillProcess($process);
+                Log::error('yt-dlp download exception', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                    'trace' => substr($e->getTraceAsString(), 0, 500),
+                ]);
                 throw $e;
             } finally {
                 // Always ensure process is stopped
@@ -166,7 +228,7 @@ class YtDlpService
             if ($process->isRunning()) {
                 $pid = $process->getPid();
                 
-                if ($pid) {
+                if ($pid && $pid > 0) {
                     Log::warning('Force killing yt-dlp process', ['pid' => $pid]);
                     
                     // Kill process group to ensure all children are terminated
@@ -181,11 +243,19 @@ class YtDlpService
                         }
                     } else {
                         // Fallback for Windows or systems without posix
-                        $process->stop(5, SIGKILL);
+                        try {
+                            $process->stop(5, SIGKILL);
+                        } catch (\Exception $e) {
+                            // Ignore if process already stopped
+                        }
                     }
                 } else {
                     // Process not started or already finished
-                    $process->stop(5, SIGKILL);
+                    try {
+                        $process->stop(5, SIGKILL);
+                    } catch (\Exception $e) {
+                        // Ignore if process already stopped
+                    }
                 }
             }
         } catch (\Exception $e) {
