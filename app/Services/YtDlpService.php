@@ -60,7 +60,6 @@ class YtDlpService
                 '--no-warnings',
                 '--quiet',
                 '--no-progress',
-                '--extract-flat', 'false',
                 '--write-info-json', 'false',
                 '--write-description', 'false',
                 '--write-thumbnail', 'false',
@@ -291,7 +290,6 @@ class YtDlpService
                 '--no-warnings',
                 '--quiet',
                 '--no-progress',
-                '--extract-flat', 'false',
                 '--write-info-json', 'false',
                 '--write-description', 'false',
                 '--write-thumbnail', 'false',
@@ -303,7 +301,6 @@ class YtDlpService
                 '--ignore-errors',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
                 '--format', 'best',
-                '--skip-download', 'false',
                 $url, // URL is already validated and sanitized
             ];
 
