@@ -2812,12 +2812,14 @@ class YtDlpService
                 }
             }
             
-            // Clean and filter URLs
+            // Clean and filter URLs - decode HTML entities and filter out non-image URLs
+            $imageUrls = array_map(function($url) {
+                // Decode HTML entities (e.g., &amp; -> &)
+                return html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }, $imageUrls);
+            
             $imageUrls = array_unique($imageUrls);
             $imageUrls = array_filter($imageUrls, function($url) {
-                // Decode HTML entities
-                $url = html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                
                 // Remove query parameters for validation, but keep them for download
                 $cleanUrl = strtok($url, '?');
                 
@@ -2826,14 +2828,32 @@ class YtDlpService
                     return false;
                 }
                 
-                // Accept URLs from Instagram CDN domains (even without extensions)
-                if (str_contains($url, 'instagram.com') || str_contains($url, 'cdninstagram.com') || str_contains($url, 'fbcdn.net')) {
-                    // Check for image-like patterns in URL path or parameters
-                    return str_contains($url, '/media/') || str_contains($url, '/scontent/') || 
-                           str_contains($url, '/p/') || str_contains($url, '/t51.') ||
-                           str_contains($url, '/t52.') || str_contains($url, '/t64.') ||
-                           preg_match('/\.(jpg|jpeg|png|webp)/i', $url) ||
-                           preg_match('/[?&](url|src|image|media)=/i', $url);
+                // Reject static/icon/logo URLs (these are not actual post images)
+                if (str_contains($url, '/rsrc.php/') || 
+                    str_contains($url, '/static.cdninstagram.com') ||
+                    str_contains($url, 'icon') || 
+                    str_contains($url, 'logo') ||
+                    str_contains($url, 'favicon')) {
+                    return false;
+                }
+                
+                // Accept URLs from Instagram CDN domains - prioritize actual image URLs
+                if (str_contains($url, 'scontent-') || str_contains($url, 'cdninstagram.com')) {
+                    // Must contain image path patterns or extensions
+                    return (str_contains($url, '/scontent/') || 
+                            str_contains($url, '/t51.') || str_contains($url, '/t52.') || 
+                            str_contains($url, '/t64.') || str_contains($url, '/v/t') ||
+                            preg_match('/\.(jpg|jpeg|png|webp)/i', $url)) &&
+                           // Must NOT be icon/logo/static files
+                           !str_contains($url, '/rsrc.php/') &&
+                           !str_contains($url, '/static/');
+                }
+                
+                // Accept other Instagram domains only if they have image extensions
+                if (str_contains($url, 'instagram.com')) {
+                    return preg_match('/\.(jpg|jpeg|png|webp)/i', $url) &&
+                           !str_contains($url, '/rsrc.php/') &&
+                           !str_contains($url, '/static/');
                 }
                 
                 // For other domains, require file extension
@@ -2850,17 +2870,52 @@ class YtDlpService
                 throw new \RuntimeException('No image URLs found in HTML');
             }
             
-            // Download images from extracted URLs
+            // Download images from extracted URLs - prioritize scontent URLs (actual images)
+            // Sort URLs to prioritize scontent-* URLs first (these are actual post images)
+            usort($imageUrls, function($a, $b) {
+                $aScore = (str_contains($a, 'scontent-') ? 10 : 0) + (str_contains($a, '/scontent/') ? 5 : 0);
+                $bScore = (str_contains($b, 'scontent-') ? 10 : 0) + (str_contains($b, '/scontent/') ? 5 : 0);
+                return $bScore <=> $aScore; // Descending order
+            });
+            
             $downloadedFiles = [];
-            foreach (array_slice($imageUrls, 0, 10) as $imageUrl) { // Limit to 10 images
+            $downloadedCount = 0;
+            $maxImages = 10; // Limit to 10 images
+            
+            foreach ($imageUrls as $imageUrl) {
+                if ($downloadedCount >= $maxImages) {
+                    break;
+                }
+                
                 try {
+                    Log::debug('Attempting to download image from extracted URL', [
+                        'url' => substr($imageUrl, 0, 100) . '...', // Truncate for logging
+                        'attempt' => $downloadedCount + 1,
+                    ]);
+                    
                     $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
                     if ($imagePath && file_exists($imagePath)) {
-                        $downloadedFiles[] = $imagePath;
+                        // Verify it's actually an image file
+                        $imageInfo = @getimagesize($imagePath);
+                        if ($imageInfo !== false && in_array($imageInfo[2], [IMAGETYPE_JPEG, IMAGETYPE_PNG, IMAGETYPE_WEBP])) {
+                            $downloadedFiles[] = $imagePath;
+                            $downloadedCount++;
+                            Log::info('Image successfully downloaded from extracted URL', [
+                                'url' => substr($imageUrl, 0, 80) . '...',
+                                'file_path' => basename($imagePath),
+                                'size' => filesize($imagePath),
+                                'dimensions' => $imageInfo[0] . 'x' . $imageInfo[1],
+                            ]);
+                        } else {
+                            Log::debug('Downloaded file is not a valid image, removing', [
+                                'file_path' => $imagePath,
+                            ]);
+                            @unlink($imagePath);
+                        }
                     }
                 } catch (\Exception $e) {
                     Log::debug('Failed to download image from extracted URL', [
-                        'url' => $imageUrl,
+                        'url' => substr($imageUrl, 0, 100) . '...',
                         'error' => $e->getMessage(),
                     ]);
                 }
