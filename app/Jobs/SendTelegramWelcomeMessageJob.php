@@ -31,9 +31,9 @@ class SendTelegramWelcomeMessageJob implements ShouldQueue
     {
         try {
             $messages = [
-                'uz' => "👋 <b>Xush kelibsiz!</b>\n\n📥 Men Instagram va TikTok'dan video va rasmlarni yuklab beraman.\n\n🔗 <i>Instagram yoki TikTok linkini yuboring:</i>",
-                'ru' => "👋 <b>Добро пожаловать!</b>\n\n📥 Я скачиваю видео и изображения из Instagram и TikTok.\n\n🔗 <i>Отправьте ссылку Instagram или TikTok:</i>",
-                'en' => "👋 <b>Welcome!</b>\n\n📥 I download videos and images from Instagram and TikTok.\n\n🔗 <i>Send an Instagram or TikTok link:</i>",
+                'uz' => "Xush kelibsiz.\n\nInstagram yoki TikTok havolasini yuboring.\nMedia fayllar avtomatik tarzda yuklab beriladi.",
+                'ru' => "Добро пожаловать.\n\nОтправьте ссылку Instagram или TikTok.\nМедиа файлы загружаются автоматически.",
+                'en' => "Welcome.\n\nSend an Instagram or TikTok link.\nMedia files are downloaded automatically.",
             ];
 
             $message = $messages[$this->language] ?? $messages['en'];
