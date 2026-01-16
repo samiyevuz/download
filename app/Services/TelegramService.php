@@ -405,46 +405,84 @@ class TelegramService
             try {
                 $chatId = is_numeric($channel) ? $channel : '@' . $channel;
 
+                Log::info('Checking channel membership', [
+                    'user_id' => $userId,
+                    'channel' => $channel,
+                    'chat_id' => $chatId,
+                ]);
+
                 $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/getChatMember", [
                     'chat_id' => $chatId,
                     'user_id' => $userId,
                 ]);
 
+                $responseBody = $response->body();
+                $responseData = $response->json();
+                
+                // Log full response for debugging
+                Log::info('getChatMember API response', [
+                    'user_id' => $userId,
+                    'channel' => $channel,
+                    'status_code' => $response->status(),
+                    'response' => $responseData,
+                ]);
+
                 if (!$response->successful()) {
-                    $errorBody = $response->body();
                     Log::warning('Failed to check channel membership', [
                         'user_id' => $userId,
                         'channel' => $channel,
                         'chat_id' => $chatId,
                         'status' => $response->status(),
-                        'body' => $errorBody,
+                        'body' => $responseBody,
+                        'response_data' => $responseData,
                     ]);
                     
                     // Check if bot is not admin or channel doesn't exist
-                    if (str_contains($errorBody, 'bot is not a member') || 
-                        str_contains($errorBody, 'chat not found') ||
-                        str_contains($errorBody, 'not enough rights')) {
+                    if (str_contains($responseBody, 'bot is not a member') || 
+                        str_contains($responseBody, 'chat not found') ||
+                        str_contains($responseBody, 'not enough rights') ||
+                        str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER')) {
                         Log::error('Bot cannot check channel membership - bot must be admin of the channel', [
                             'channel' => $channel,
-                            'error' => $errorBody,
+                            'error' => $responseBody,
                         ]);
                     }
                     
                     return false;
                 }
 
-                $data = $response->json();
-                $status = $data['result']['status'] ?? null;
+                $status = $responseData['result']['status'] ?? null;
+                $user = $responseData['result']['user'] ?? null;
+
+                Log::debug('Channel membership check result', [
+                    'user_id' => $userId,
+                    'channel' => $channel,
+                    'status' => $status,
+                    'user' => $user,
+                ]);
 
                 // User is member if status is 'member', 'administrator', or 'creator'
-                if (!in_array($status, ['member', 'administrator', 'creator'])) {
+                // Also check for 'restricted' status (user is restricted but still a member)
+                if (!in_array($status, ['member', 'administrator', 'creator', 'restricted'])) {
+                    Log::info('User is not a member of channel', [
+                        'user_id' => $userId,
+                        'channel' => $channel,
+                        'status' => $status,
+                    ]);
                     return false;
                 }
+
+                Log::info('User is a member of channel', [
+                    'user_id' => $userId,
+                    'channel' => $channel,
+                    'status' => $status,
+                ]);
             } catch (\Exception $e) {
                 Log::error('Error checking channel membership', [
                     'user_id' => $userId,
                     'channel' => $channel,
                     'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
                 return false;
             }
