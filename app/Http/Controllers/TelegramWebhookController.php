@@ -64,13 +64,25 @@ class TelegramWebhookController extends Controller
 
     /**
      * Check if user is subscribed to required channel
+     * Note: Subscription check is skipped for groups/supergroups
      *
      * @param int|string $userId
      * @param string $language
+     * @param string|null $chatType Chat type (private, group, supergroup)
      * @return bool
      */
-    private function checkSubscription(int|string $userId, string $language = 'en'): bool
+    private function checkSubscription(int|string $userId, string $language = 'en', ?string $chatType = null): bool
     {
+        // Skip subscription check for groups and supergroups
+        // Subscription is only required for private chats
+        if ($chatType && in_array($chatType, ['group', 'supergroup'])) {
+            Log::debug('Skipping subscription check for group chat', [
+                'user_id' => $userId,
+                'chat_type' => $chatType,
+            ]);
+            return true; // Allow access in groups
+        }
+
         // Check if channel subscription is required
         $requiredChannels = config('telegram.required_channels');
         $channelId = config('telegram.required_channel_id');
@@ -79,6 +91,7 @@ class TelegramWebhookController extends Controller
         // Debug logging
         Log::debug('Checking subscription', [
             'user_id' => $userId,
+            'chat_type' => $chatType ?? 'private',
             'required_channels' => $requiredChannels,
             'channel_id' => $channelId,
             'channel_username' => $channelUsername,
@@ -90,7 +103,7 @@ class TelegramWebhookController extends Controller
             return true;
         }
 
-        // Check membership
+        // Check membership (only for private chats)
         $membershipResult = $this->telegramService->checkChannelMembership($userId);
         $isMember = $membershipResult['is_member'];
         $missingChannels = $membershipResult['missing_channels'];
@@ -164,9 +177,7 @@ class TelegramWebhookController extends Controller
         if ($text) {
             // Check subscription only for private chats (not for groups/supergroups)
             // In groups, subscription check is not required
-            $isPrivateChat = in_array($chatType, ['private']);
-            
-            if ($isPrivateChat && !$this->checkSubscription($userId, $language)) {
+            if (!$this->checkSubscription($userId, $language, $chatType)) {
                 return;
             }
 
@@ -245,12 +256,44 @@ class TelegramWebhookController extends Controller
         if ($callbackData === 'check_subscription') {
             $userId = $callbackQuery['from']['id'] ?? null;
             $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+            $message = $callbackQuery['message'] ?? null;
+            $chatType = $message['chat']['type'] ?? 'private';
 
             if (!$userId) {
                 return;
             }
 
-            // Check membership
+            // Skip subscription check for groups/supergroups
+            if (in_array($chatType, ['group', 'supergroup'])) {
+                Log::debug('Skipping subscription check for group chat in callback', [
+                    'user_id' => $userId,
+                    'chat_type' => $chatType,
+                ]);
+                // Send success message and welcome message
+                $successMessages = [
+                    'uz' => '✅ Guruhda ishlaydi!',
+                    'ru' => '✅ Работает в группе!',
+                    'en' => '✅ Works in group!',
+                ];
+                $text = $successMessages[$language] ?? $successMessages['en'];
+                \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, false)->onQueue('telegram');
+                
+                // Delete subscription message if exists
+                if ($message && isset($message['message_id'])) {
+                    $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                }
+                
+                // Send welcome message
+                $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
+                if ($selectedLanguage) {
+                    \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
+                } else {
+                    \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                }
+                return;
+            }
+
+            // Check membership (only for private chats)
             $membershipResult = $this->telegramService->checkChannelMembership($userId);
             $isMember = $membershipResult['is_member'];
             $missingChannels = $membershipResult['missing_channels'];
@@ -354,9 +397,8 @@ class TelegramWebhookController extends Controller
             // In groups, subscription check is not required
             $message = $callbackQuery['message'] ?? null;
             $chatType = $message['chat']['type'] ?? 'private';
-            $isPrivateChat = in_array($chatType, ['private']);
             
-            if ($isPrivateChat && !$this->checkSubscription($userId, $language)) {
+            if (!$this->checkSubscription($userId, $language, $chatType)) {
                 // Subscription required message will be sent by checkSubscription
                 return;
             }
