@@ -754,6 +754,26 @@ class YtDlpService
             ]);
         }
         
+        // Method 6: Last resort - Try to extract image URL from HTML page directly
+        // This is used when yt-dlp cannot get JSON or download files
+        try {
+            Log::info('Trying HTML parsing method as last resort', ['url' => $url]);
+            $result = $this->downloadInstagramImageFromHtml($url, $outputDir);
+            if (!empty($result)) {
+                Log::info('Instagram image downloaded via HTML parsing method', [
+                    'url' => $url,
+                    'files_count' => count($result),
+                ]);
+                return $result;
+            }
+        } catch (\Exception $e) {
+            $allErrors[] = 'HTML parsing method: ' . $e->getMessage();
+            Log::warning('Instagram HTML parsing method failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
         // All methods failed
         Log::error('All Instagram image download methods failed', [
             'url' => $url,
@@ -2560,6 +2580,200 @@ class YtDlpService
                 'error' => $e->getMessage(),
             ]);
             return null;
+        }
+    }
+    
+    /**
+     * Download Instagram image by parsing HTML page directly
+     * This is a last resort method when yt-dlp fails
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImageFromHtml(string $url, string $outputDir): array
+    {
+        try {
+            Log::debug('Attempting HTML parsing method for Instagram image', ['url' => $url]);
+            
+            // Try with cookies if available
+            $cookiesPaths = $this->getInstagramCookiesPaths();
+            $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
+            
+            // Prepare headers
+            $headers = [
+                'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                'Referer: https://www.instagram.com/',
+                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language: en-US,en;q=0.9',
+            ];
+            
+            // Build context options
+            $contextOptions = [
+                'http' => [
+                    'method' => 'GET',
+                    'header' => implode("\r\n", $headers),
+                    'timeout' => 30,
+                    'follow_location' => true,
+                    'max_redirects' => 5,
+                ],
+            ];
+            
+            // Add cookies if available
+            if ($cookiesPath && file_exists($cookiesPath)) {
+                // Parse cookies and add to header
+                $cookiesContent = @file_get_contents($cookiesPath);
+                if ($cookiesContent) {
+                    // Extract cookies from Netscape format
+                    $cookieLines = explode("\n", $cookiesContent);
+                    $cookiePairs = [];
+                    foreach ($cookieLines as $line) {
+                        $line = trim($line);
+                        if (empty($line) || str_starts_with($line, '#') || str_starts_with($line, '#')) {
+                            continue;
+                        }
+                        // Netscape format: domain, flag, path, secure, expiration, name, value
+                        $parts = explode("\t", $line);
+                        if (count($parts) >= 7 && str_contains($parts[0], 'instagram.com')) {
+                            $cookiePairs[] = $parts[5] . '=' . $parts[6];
+                        }
+                    }
+                    
+                    if (!empty($cookiePairs)) {
+                        $contextOptions['http']['header'] .= "\r\nCookie: " . implode('; ', array_unique($cookiePairs));
+                    }
+                }
+            }
+            
+            $context = stream_context_create($contextOptions);
+            
+            // Fetch HTML
+            $html = @file_get_contents($url, false, $context);
+            
+            if ($html === false || empty($html)) {
+                throw new \RuntimeException('Failed to fetch Instagram page HTML');
+            }
+            
+            Log::debug('Instagram HTML fetched successfully', [
+                'url' => $url,
+                'html_length' => strlen($html),
+            ]);
+            
+            // Extract image URLs from HTML
+            // Instagram embeds image URLs in JSON-LD or meta tags or script tags
+            $imageUrls = [];
+            
+            // Method 1: Extract from JSON-LD structured data
+            if (preg_match_all('/<script[^>]*type=["\']application\/ld\+json["\'][^>]*>(.*?)<\/script>/is', $html, $jsonLdMatches)) {
+                foreach ($jsonLdMatches[1] as $jsonLdContent) {
+                    $jsonData = json_decode(trim($jsonLdContent), true);
+                    if ($jsonData && is_array($jsonData)) {
+                        // Look for image URLs in JSON-LD
+                        if (!empty($jsonData['image']) && is_string($jsonData['image'])) {
+                            $imageUrls[] = $jsonData['image'];
+                        } elseif (!empty($jsonData['image']) && is_array($jsonData['image'])) {
+                            if (isset($jsonData['image']['url'])) {
+                                $imageUrls[] = $jsonData['image']['url'];
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Method 2: Extract from meta property="og:image"
+            if (preg_match_all('/<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $ogMatches)) {
+                $imageUrls = array_merge($imageUrls, $ogMatches[1]);
+            }
+            
+            // Method 3: Extract from meta name="twitter:image"
+            if (preg_match_all('/<meta[^>]*name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $twitterMatches)) {
+                $imageUrls = array_merge($imageUrls, $twitterMatches[1]);
+            }
+            
+            // Method 4: Extract from script tags with window._sharedData
+            if (preg_match('/window\._sharedData\s*=\s*({.+?});/is', $html, $sharedDataMatches)) {
+                $sharedData = json_decode($sharedDataMatches[1], true);
+                if ($sharedData && is_array($sharedData)) {
+                    // Navigate through sharedData structure to find image URLs
+                    $imagePaths = [
+                        ['entry_data', 'PostPage', 0, 'graphql', 'shortcode_media', 'display_url'],
+                        ['entry_data', 'PostPage', 0, 'graphql', 'shortcode_media', 'thumbnail_src'],
+                        ['entry_data', 'PostPage', 0, 'graphql', 'shortcode_media', 'edge_sidecar_to_children', 'edges', 0, 'node', 'display_url'],
+                    ];
+                    
+                    foreach ($imagePaths as $path) {
+                        $value = $sharedData;
+                        foreach ($path as $key) {
+                            if (is_array($value) && isset($value[$key])) {
+                                $value = $value[$key];
+                            } else {
+                                $value = null;
+                                break;
+                            }
+                        }
+                        if ($value && is_string($value)) {
+                            $imageUrls[] = $value;
+                        }
+                    }
+                }
+            }
+            
+            // Method 5: Extract from window.__additionalDataLoaded or similar patterns
+            if (preg_match_all('/"display_url":\s*"([^"]+)"/i', $html, $displayUrlMatches)) {
+                $imageUrls = array_merge($imageUrls, $displayUrlMatches[1]);
+            }
+            
+            // Clean and filter URLs
+            $imageUrls = array_unique($imageUrls);
+            $imageUrls = array_filter($imageUrls, function($url) {
+                // Only keep valid image URLs
+                return filter_var($url, FILTER_VALIDATE_URL) && 
+                       (str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
+                        str_contains($url, '.png') || str_contains($url, '.webp') ||
+                        str_contains($url, 'instagram.com') || str_contains($url, 'cdninstagram.com'));
+            });
+            
+            Log::debug('Image URLs extracted from HTML', [
+                'url' => $url,
+                'image_urls_count' => count($imageUrls),
+                'image_urls' => array_slice($imageUrls, 0, 3), // First 3 for logging
+            ]);
+            
+            if (empty($imageUrls)) {
+                throw new \RuntimeException('No image URLs found in HTML');
+            }
+            
+            // Download images from extracted URLs
+            $downloadedFiles = [];
+            foreach (array_slice($imageUrls, 0, 10) as $imageUrl) { // Limit to 10 images
+                try {
+                    $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
+                    if ($imagePath && file_exists($imagePath)) {
+                        $downloadedFiles[] = $imagePath;
+                    }
+                } catch (\Exception $e) {
+                    Log::debug('Failed to download image from extracted URL', [
+                        'url' => $imageUrl,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+            
+            if (!empty($downloadedFiles)) {
+                Log::info('Instagram images downloaded via HTML parsing', [
+                    'url' => $url,
+                    'files_count' => count($downloadedFiles),
+                ]);
+                return array_values($downloadedFiles);
+            }
+            
+            throw new \RuntimeException('Failed to download images from extracted URLs');
+        } catch (\Exception $e) {
+            Log::error('HTML parsing method failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 }
