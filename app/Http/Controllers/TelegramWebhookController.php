@@ -370,22 +370,78 @@ class TelegramWebhookController extends Controller
                         'en' => '✅ Success! You have subscribed to all channels.',
                     ];
                     $text = $successMessages[$language] ?? $successMessages['en'];
-                    \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, false)->onQueue('telegram');
+                    
+                    // Answer callback query directly (synchronous)
+                    try {
+                        $this->telegramService->answerCallbackQuery($callbackQueryId, $text, false);
+                    } catch (\Exception $e) {
+                        Log::warning('Failed to answer callback query', [
+                            'callback_query_id' => $callbackQueryId,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
                     
                     // Delete subscription message
                     if ($message && isset($message['message_id'])) {
-                        $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                        try {
+                            $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                        } catch (\Exception $e) {
+                            Log::warning('Failed to delete subscription message', [
+                                'chat_id' => $chatId,
+                                'message_id' => $message['message_id'],
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
                     }
                     
                     // Check if language is already selected
                     $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
                     
                     if ($selectedLanguage) {
-                        // Send welcome message in selected language
-                        \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
+                        // Send welcome message DIRECTLY (synchronous) in selected language
+                        Log::info('Sending welcome message after subscription check', [
+                            'chat_id' => $chatId,
+                            'language' => $selectedLanguage,
+                        ]);
+                        
+                        $messages = [
+                            'uz' => "Xush kelibsiz.\n\nInstagram yoki TikTok havolasini yuboring.\nMedia fayllar avtomatik tarzda yuklab beriladi.",
+                            'ru' => "Добро пожаловать.\n\nОтправьте ссылку Instagram или TikTok.\nМедиа файлы загружаются автоматически.",
+                            'en' => "Welcome.\n\nSend an Instagram or TikTok link.\nMedia files are downloaded automatically.",
+                        ];
+
+                        $welcomeMessage = $messages[$selectedLanguage] ?? $messages['en'];
+                        $messageId = $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                        
+                        if ($messageId) {
+                            Log::info('Welcome message sent successfully after subscription check', [
+                                'chat_id' => $chatId,
+                                'language' => $selectedLanguage,
+                                'message_id' => $messageId,
+                            ]);
+                        }
                     } else {
-                        // Send language selection
-                        \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                        // Send language selection directly (synchronous)
+                        try {
+                            $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
+                            $keyboard = [
+                                [
+                                    ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
+                                ],
+                                [
+                                    ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
+                                ],
+                                [
+                                    ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
+                                ],
+                            ];
+                            $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
+                        } catch (\Exception $e) {
+                            Log::error('Failed to send language selection after subscription check', [
+                                'chat_id' => $chatId,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
                     }
                 } else {
                     // Show which channels are missing

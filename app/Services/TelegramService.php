@@ -64,6 +64,51 @@ class TelegramService
     }
 
     /**
+     * Answer callback query
+     *
+     * @param string $callbackQueryId
+     * @param string|null $text
+     * @param bool $showAlert
+     * @return bool
+     */
+    public function answerCallbackQuery(string $callbackQueryId, ?string $text = null, bool $showAlert = false): bool
+    {
+        try {
+            $payload = [
+                'callback_query_id' => $callbackQueryId,
+            ];
+            
+            if ($text !== null) {
+                $payload['text'] = $text;
+            }
+            
+            if ($showAlert) {
+                $payload['show_alert'] = true;
+            }
+
+            $response = Http::timeout(5)->post("{$this->apiUrl}{$this->botToken}/answerCallbackQuery", $payload);
+
+            if (!$response->successful()) {
+                Log::error('Telegram API error', [
+                    'method' => 'answerCallbackQuery',
+                    'callback_query_id' => $callbackQueryId,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                return false;
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to answer callback query', [
+                'callback_query_id' => $callbackQueryId,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Delete message
      *
      * @param int|string $chatId
