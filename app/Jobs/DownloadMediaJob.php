@@ -123,12 +123,47 @@ class DownloadMediaJob implements ShouldQueue
 
             // Send videos
             foreach ($videos as $videoPath) {
-                $telegramService->sendVideo(
+                $fileSize = filesize($videoPath);
+                $maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
+                
+                if ($fileSize > $maxFileSize) {
+                    // Video is too large for Telegram
+                    $fileSizeMB = round($fileSize / 1024 / 1024, 2);
+                    
+                    $largeVideoMessages = [
+                        'uz' => "❌ <b>Video juda katta!</b>\n\n📹 Video hajmi: <b>{$fileSizeMB} MB</b>\n\n⚠️ Telegram maksimal <b>50 MB</b> videolarni qabul qiladi.\n\n💡 Kichikroq video yoki boshqa formatni yuklab olishga harakat qiling.",
+                        'ru' => "❌ <b>Видео слишком большое!</b>\n\n📹 Размер видео: <b>{$fileSizeMB} MB</b>\n\n⚠️ Telegram принимает видео максимум <b>50 MB</b>.\n\n💡 Попробуйте скачать видео меньшего размера или в другом формате.",
+                        'en' => "❌ <b>Video is too large!</b>\n\n📹 Video size: <b>{$fileSizeMB} MB</b>\n\n⚠️ Telegram accepts videos up to <b>50 MB</b> maximum.\n\n💡 Try downloading a smaller video or in a different format.",
+                    ];
+                    
+                    $errorMessage = $largeVideoMessages[$this->language] ?? $largeVideoMessages['en'];
+                    
+                    $telegramService->sendMessage($this->chatId, $errorMessage);
+                    
+                    Log::warning('Video too large for Telegram', [
+                        'chat_id' => $this->chatId,
+                        'url' => $this->url,
+                        'file_size' => $fileSize,
+                        'file_size_mb' => $fileSizeMB,
+                        'max_size' => $maxFileSize,
+                    ]);
+                    
+                    continue;
+                }
+                
+                $success = $telegramService->sendVideo(
                     $this->chatId,
                     $videoPath,
                     $caption,
                     $this->messageId
                 );
+                
+                if (!$success) {
+                    Log::warning('Failed to send video', [
+                        'chat_id' => $this->chatId,
+                        'video_path' => $videoPath,
+                    ]);
+                }
             }
 
             // Send images

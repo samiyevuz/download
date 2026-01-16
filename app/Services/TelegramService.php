@@ -168,11 +168,14 @@ class TelegramService
             $maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
 
             if ($fileSize > $maxFileSize) {
-                Log::error('Video file too large', [
+                Log::warning('Video file too large for Telegram', [
                     'path' => $videoPath,
                     'size' => $fileSize,
+                    'size_mb' => round($fileSize / 1024 / 1024, 2),
                     'max' => $maxFileSize,
                 ]);
+                // Return false to indicate file is too large
+                // The caller should handle this by sending a message to user
                 return false;
             }
 
