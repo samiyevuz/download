@@ -920,8 +920,115 @@ class YtDlpService
             ]);
         }
 
-        // Method 2: Try with --write-thumbnail and --skip-download to get image URL
+        // Method 2: Try with --dump-json to extract image URLs directly
         // This is the most reliable method for Instagram images
+        try {
+            $jsonArguments = [
+                $this->ytDlpPath,
+                '--dump-json',
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                '--cookies', $cookiesPath,
+                '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                '--referer', 'https://www.instagram.com/',
+                '--extractor-args', 'instagram:skip_auth=False',
+                $url,
+            ];
+
+            $jsonProcess = new Process($jsonArguments);
+            $jsonProcess->setTimeout(30);
+            $jsonProcess->setIdleTimeout(30);
+            $jsonProcess->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
+
+            try {
+                $jsonProcess->run();
+                
+                if ($jsonProcess->isSuccessful()) {
+                    $jsonOutput = $jsonProcess->getOutput();
+                    $mediaInfo = json_decode($jsonOutput, true);
+                    
+                    if ($mediaInfo && is_array($mediaInfo)) {
+                        // Try to extract image URLs from JSON
+                        $imageUrls = [];
+                        
+                        // Check for thumbnail
+                        if (!empty($mediaInfo['thumbnail'])) {
+                            $imageUrls[] = $mediaInfo['thumbnail'];
+                        }
+                        
+                        // Check for thumbnails array
+                        if (!empty($mediaInfo['thumbnails']) && is_array($mediaInfo['thumbnails'])) {
+                            foreach ($mediaInfo['thumbnails'] as $thumb) {
+                                if (!empty($thumb['url'])) {
+                                    $imageUrls[] = $thumb['url'];
+                                }
+                            }
+                        }
+                        
+                        // Check for url (direct image URL)
+                        if (!empty($mediaInfo['url']) && $this->isImageUrl($mediaInfo['url'])) {
+                            $imageUrls[] = $mediaInfo['url'];
+                        }
+                        
+                        // Check for formats array
+                        if (!empty($mediaInfo['formats']) && is_array($mediaInfo['formats'])) {
+                            foreach ($mediaInfo['formats'] as $format) {
+                                if (!empty($format['url']) && $this->isImageUrl($format['url'])) {
+                                    $imageUrls[] = $format['url'];
+                                }
+                            }
+                        }
+                        
+                        // Download images from extracted URLs
+                        if (!empty($imageUrls)) {
+                            $downloadedFiles = [];
+                            foreach (array_unique($imageUrls) as $imageUrl) {
+                                try {
+                                    $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
+                                    if ($imagePath && file_exists($imagePath)) {
+                                        $downloadedFiles[] = $imagePath;
+                                    }
+                                } catch (\Exception $e) {
+                                    Log::debug('Failed to download image from extracted URL', [
+                                        'url' => $imageUrl,
+                                        'error' => $e->getMessage(),
+                                    ]);
+                                }
+                            }
+                            
+                            if (!empty($downloadedFiles)) {
+                                Log::info('Instagram image downloaded via JSON extraction', [
+                                    'url' => $url,
+                                    'files_count' => count($downloadedFiles),
+                                ]);
+                                return array_values($downloadedFiles);
+                            }
+                        }
+                    }
+                } else {
+                    // Log error for debugging
+                    $errorOutput = $jsonProcess->getErrorOutput();
+                    Log::debug('JSON extraction method failed', [
+                        'url' => $url,
+                        'exit_code' => $jsonProcess->getExitCode(),
+                        'error' => substr($errorOutput, 0, 500),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::debug('JSON extraction method failed, trying direct download', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::debug('JSON extraction method setup failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Method 2b: Try with --write-thumbnail and --skip-download as fallback
         try {
             $arguments = [
                 $this->ytDlpPath,
@@ -2106,5 +2213,109 @@ class YtDlpService
         ]);
 
         return $downloadedFiles;
+    }
+    
+    /**
+     * Check if URL is an image URL
+     *
+     * @param string $url
+     * @return bool
+     */
+    private function isImageUrl(string $url): bool
+    {
+        $imageExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
+        $urlLower = strtolower($url);
+        
+        foreach ($imageExtensions as $ext) {
+            if (str_contains($urlLower, '.' . $ext) || str_contains($urlLower, '/' . $ext . '?')) {
+                return true;
+            }
+        }
+        
+        // Check if URL contains image-related paths
+        if (preg_match('/\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)/i', $url)) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Download image from direct URL
+     *
+     * @param string $imageUrl
+     * @param string $outputDir
+     * @return string|null Downloaded file path or null on failure
+     */
+    private function downloadImageFromUrl(string $imageUrl, string $outputDir): ?string
+    {
+        try {
+            // Generate unique filename
+            $extension = 'jpg';
+            if (preg_match('/\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)/i', $imageUrl, $matches)) {
+                $extension = strtolower($matches[1]);
+                if ($extension === 'jpeg') {
+                    $extension = 'jpg';
+                }
+            }
+            
+            $filename = uniqid('img_', true) . '.' . $extension;
+            $filePath = $outputDir . '/' . $filename;
+            
+            // Download using file_get_contents with context
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'header' => [
+                        'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                        'Referer: https://www.instagram.com/',
+                    ],
+                    'timeout' => 30,
+                    'follow_location' => true,
+                    'max_redirects' => 5,
+                ],
+            ]);
+            
+            $imageData = @file_get_contents($imageUrl, false, $context);
+            
+            if ($imageData === false) {
+                Log::warning('Failed to download image from URL', [
+                    'url' => $imageUrl,
+                ]);
+                return null;
+            }
+            
+            // Verify it's actually an image
+            $imageInfo = @getimagesizefromstring($imageData);
+            if ($imageInfo === false) {
+                Log::warning('Downloaded data is not a valid image', [
+                    'url' => $imageUrl,
+                ]);
+                return null;
+            }
+            
+            // Save file
+            if (file_put_contents($filePath, $imageData) === false) {
+                Log::warning('Failed to save downloaded image', [
+                    'url' => $imageUrl,
+                    'file_path' => $filePath,
+                ]);
+                return null;
+            }
+            
+            Log::debug('Image downloaded from URL', [
+                'url' => $imageUrl,
+                'file_path' => $filePath,
+                'size' => filesize($filePath),
+            ]);
+            
+            return $filePath;
+        } catch (\Exception $e) {
+            Log::error('Exception downloading image from URL', [
+                'url' => $imageUrl,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 }
