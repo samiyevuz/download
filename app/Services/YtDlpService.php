@@ -54,6 +54,10 @@ class YtDlpService
             // Check if this is an Instagram URL and use enhanced method
             if ($this->isInstagramUrl($url)) {
                 // First, try to get media info to determine if it's an image or video post
+                $mediaInfo = null;
+                $isImagePost = false;
+                $isVideoPost = false;
+                
                 try {
                     $mediaInfo = $this->getMediaInfo($url);
                     $isImagePost = $this->isImagePost($mediaInfo);
@@ -64,17 +68,44 @@ class YtDlpService
                         'is_image' => $isImagePost,
                         'is_video' => $isVideoPost,
                     ]);
-                    
-                    if ($isImagePost && !$isVideoPost) {
-                        // For image-only posts, use image-specific format
-                        return $this->downloadInstagramImage($url, $outputDir);
-                    } elseif ($isVideoPost && !$isImagePost) {
-                        // For video-only posts, use video-specific format
-                        return $this->downloadInstagramVideo($url, $outputDir);
-                    }
-                    // If both or unclear, use default method
                 } catch (\Exception $e) {
-                    Log::warning('Failed to get media info, using default method', [
+                    Log::warning('Failed to get media info, trying URL-based detection', [
+                        'url' => $url,
+                        'error' => $e->getMessage(),
+                    ]);
+                    
+                    // Fallback: Try to detect from URL pattern
+                    // Instagram /p/ URLs are usually image posts, /reel/ are videos
+                    if (str_contains($url, '/p/') || str_contains($url, '/post/')) {
+                        $isImagePost = true;
+                        Log::info('Detected as image post from URL pattern', ['url' => $url]);
+                    } elseif (str_contains($url, '/reel/') || str_contains($url, '/tv/')) {
+                        $isVideoPost = true;
+                        Log::info('Detected as video post from URL pattern', ['url' => $url]);
+                    }
+                }
+                
+                // Use specific download method based on detection
+                if ($isImagePost && !$isVideoPost) {
+                    // For image-only posts, use image-specific format
+                    Log::info('Using Instagram image download method', ['url' => $url]);
+                    return $this->downloadInstagramImage($url, $outputDir);
+                } elseif ($isVideoPost && !$isImagePost) {
+                    // For video-only posts, use video-specific format
+                    Log::info('Using Instagram video download method', ['url' => $url]);
+                    return $this->downloadInstagramVideo($url, $outputDir);
+                }
+                
+                // If unclear or both, try image first (most Instagram posts are images)
+                // Then fallback to default method
+                Log::info('Media type unclear, trying image download first', ['url' => $url]);
+                try {
+                    $result = $this->downloadInstagramImage($url, $outputDir);
+                    if (!empty($result)) {
+                        return $result;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Image download failed, trying default method', [
                         'url' => $url,
                         'error' => $e->getMessage(),
                     ]);
@@ -540,10 +571,13 @@ class YtDlpService
     {
         $cookiesPath = config('telegram.instagram_cookies_path');
         
-        // Method 1: Try with cookies
+        // Method 1: Try with cookies (most reliable)
         if ($cookiesPath && file_exists($cookiesPath)) {
             try {
-                return $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
+                $result = $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
+                if (!empty($result)) {
+                    return $result;
+                }
             } catch (\Exception $e) {
                 Log::warning('Instagram image download with cookies failed, trying fallback', [
                     'url' => $url,
@@ -552,8 +586,29 @@ class YtDlpService
             }
         }
         
-        // Method 2: Try without cookies
-        return $this->downloadInstagramImageWithoutCookies($url, $outputDir);
+        // Method 2: Try without cookies with enhanced headers
+        try {
+            $result = $this->downloadInstagramImageWithoutCookies($url, $outputDir);
+            if (!empty($result)) {
+                return $result;
+            }
+        } catch (\Exception $e) {
+            Log::warning('Instagram image download without cookies failed, trying alternative', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Method 3: Try alternative format selector
+        try {
+            return $this->downloadInstagramImageAlternative($url, $outputDir);
+        } catch (\Exception $e) {
+            Log::error('All Instagram image download methods failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
     }
     
     /**
@@ -626,29 +681,132 @@ class YtDlpService
      */
     private function downloadInstagramImageWithoutCookies(string $url, string $outputDir): array
     {
-        $arguments = [
-            $this->ytDlpPath,
-            '--no-playlist',
-            '--no-warnings',
-            '--quiet',
-            '--no-progress',
-            '--ignore-errors',
-            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-            '--referer', 'https://www.instagram.com/',
-            '--add-header', 'Accept-Language:en-US,en;q=0.9',
-            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
-            $url,
+        // Try multiple user agents for better compatibility
+        $userAgents = [
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         ];
-
-        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
         
-        // Filter to only return image files (exclude videos)
-        return array_filter($downloadedFiles, function($file) {
-            return $this->isImage($file);
-        });
+        $lastException = null;
+        
+        foreach ($userAgents as $userAgent) {
+            try {
+                $arguments = [
+                    $this->ytDlpPath,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--quiet',
+                    '--no-progress',
+                    '--ignore-errors',
+                    '--user-agent', $userAgent,
+                    '--referer', 'https://www.instagram.com/',
+                    '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                    '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                    '--output', $outputDir . '/%(title)s.%(ext)s',
+                    '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+                    '--extractor-args', 'instagram:skip_auth=True',
+                    $url,
+                ];
+
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return image files (exclude videos)
+                $images = array_filter($downloadedFiles, function($file) {
+                    return $this->isImage($file);
+                });
+                
+                if (!empty($images)) {
+                    return array_values($images);
+                }
+            } catch (\Exception $e) {
+                $lastException = $e;
+                Log::debug('Instagram image download attempt failed', [
+                    'url' => $url,
+                    'user_agent' => $userAgent,
+                    'error' => $e->getMessage(),
+                ]);
+                continue;
+            }
+        }
+        
+        // If all attempts failed, throw the last exception
+        if ($lastException) {
+            throw $lastException;
+        }
+        
+        throw new \RuntimeException('No image files were downloaded');
+    }
+    
+    /**
+     * Alternative Instagram image download method with different format selectors
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImageAlternative(string $url, string $outputDir): array
+    {
+        // Try different format selectors
+        $formatSelectors = [
+            'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+            'best[height<=1080][ext=jpg]/best[height<=1080][ext=jpeg]/best[height<=1080][ext=png]/best[ext=jpg]/best',
+            'best',
+        ];
+        
+        $lastException = null;
+        
+        foreach ($formatSelectors as $format) {
+            try {
+                $arguments = [
+                    $this->ytDlpPath,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--quiet',
+                    '--no-progress',
+                    '--ignore-errors',
+                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    '--referer', 'https://www.instagram.com/',
+                    '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                    '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                    '--output', $outputDir . '/%(title)s.%(ext)s',
+                    '--format', $format,
+                    '--extractor-args', 'instagram:skip_auth=True',
+                    $url,
+                ];
+
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return image files (exclude videos)
+                $images = array_filter($downloadedFiles, function($file) {
+                    return $this->isImage($file);
+                });
+                
+                if (!empty($images)) {
+                    Log::info('Instagram image downloaded with alternative format', [
+                        'url' => $url,
+                        'format' => $format,
+                        'files_count' => count($images),
+                    ]);
+                    return array_values($images);
+                }
+            } catch (\Exception $e) {
+                $lastException = $e;
+                Log::debug('Instagram alternative image download attempt failed', [
+                    'url' => $url,
+                    'format' => $format,
+                    'error' => $e->getMessage(),
+                ]);
+                continue;
+            }
+        }
+        
+        // If all attempts failed, throw the last exception
+        if ($lastException) {
+            throw $lastException;
+        }
+        
+        throw new \RuntimeException('No image files were downloaded');
     }
     
     /**
