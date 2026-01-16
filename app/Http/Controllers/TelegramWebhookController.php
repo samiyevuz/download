@@ -235,8 +235,24 @@ class TelegramWebhookController extends Controller
             }
 
             // Check subscription (only for private chats, skip for groups)
-            if (!$this->checkSubscription($userId, $language, $chatType)) {
+            // In groups, always allow (subscription check is skipped)
+            $subscriptionCheck = $this->checkSubscription($userId, $language, $chatType);
+            
+            Log::info('URL received, subscription check result', [
+                'chat_id' => $chatId,
+                'user_id' => $userId,
+                'url' => $validatedUrl,
+                'chat_type' => $chatType,
+                'subscription_check' => $subscriptionCheck,
+            ]);
+            
+            if (!$subscriptionCheck) {
                 // Subscription required message will be sent by checkSubscription
+                Log::info('Subscription check failed, not processing URL', [
+                    'chat_id' => $chatId,
+                    'user_id' => $userId,
+                    'chat_type' => $chatType,
+                ]);
                 return;
             }
 
@@ -439,21 +455,69 @@ class TelegramWebhookController extends Controller
 
             // Check subscription after language selection (only for private chats)
             // In groups, subscription check is not required
-            if (!$this->checkSubscription($userId, $language, $chatType)) {
+            $subscriptionCheck = $this->checkSubscription($userId, $language, $chatType);
+            
+            Log::info('Language selected, subscription check result', [
+                'chat_id' => $chatId,
+                'user_id' => $userId,
+                'language' => $language,
+                'chat_type' => $chatType,
+                'subscription_check' => $subscriptionCheck,
+            ]);
+
+            if (!$subscriptionCheck) {
                 // Subscription required message will be sent by checkSubscription
+                // Don't send welcome message if not subscribed (private chat only)
+                Log::info('Subscription check failed, not sending welcome message', [
+                    'chat_id' => $chatId,
+                    'user_id' => $userId,
+                    'chat_type' => $chatType,
+                ]);
                 return;
             }
 
-            // If subscribed (or in group), send welcome message
+            // If subscribed (or in group), send welcome message IMMEDIATELY
             // IMPORTANT: Use chatId (which is now correctly set to group chat ID if in group)
+            Log::info('Sending welcome message after language selection', [
+                'chat_id' => $chatId,
+                'language' => $language,
+                'chat_type' => $chatType,
+            ]);
+            
             try {
                 \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $language)->onQueue('telegram');
+                Log::info('Welcome message job dispatched', [
+                    'chat_id' => $chatId,
+                    'language' => $language,
+                ]);
             } catch (\Exception $e) {
-                Log::warning('Failed to send welcome message', [
+                Log::error('Failed to dispatch welcome message job', [
                     'chat_id' => $chatId,
                     'language' => $language,
                     'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
+                
+                // Fallback: send welcome message directly (synchronously)
+                try {
+                    $welcomeMessages = [
+                        'uz' => "Welcome.\nSend an Instagram or TikTok link.",
+                        'ru' => "Welcome.\nSend an Instagram or TikTok link.",
+                        'en' => "Welcome.\nSend an Instagram or TikTok link.",
+                    ];
+                    $welcomeMessage = $welcomeMessages[$language] ?? $welcomeMessages['en'];
+                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                    Log::info('Welcome message sent directly (fallback)', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                    ]);
+                } catch (\Exception $fallbackError) {
+                    Log::error('Failed to send welcome message even with fallback', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                        'error' => $fallbackError->getMessage(),
+                    ]);
+                }
             }
         }
     }
