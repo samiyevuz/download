@@ -951,6 +951,10 @@ class YtDlpService
                 $jsonOutput = $jsonProcess->getOutput();
                 $errorOutput = $jsonProcess->getErrorOutput();
                 
+                // If output is empty but error contains "No video formats", process might have partially succeeded
+                // Try to continue parsing even if process reports failure
+                $isNoVideoFormatsError = str_contains(strtolower($errorOutput), 'no video formats');
+                
                 // Try to extract JSON from output (might be mixed with errors)
                 $jsonLines = explode("\n", $jsonOutput);
                 $jsonData = null;
@@ -975,6 +979,37 @@ class YtDlpService
                     $decoded = json_decode($jsonOutput, true);
                     if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
                         $jsonData = $decoded;
+                    }
+                }
+                
+                // If still no JSON and "No video formats" error, try parsing error output (sometimes JSON is in stderr)
+                if ($jsonData === null && $isNoVideoFormatsError && !empty($errorOutput)) {
+                    // Try to find JSON in error output
+                    $errorLines = explode("\n", $errorOutput);
+                    foreach ($errorLines as $line) {
+                        $line = trim($line);
+                        if (empty($line)) continue;
+                        if (str_starts_with($line, '{')) {
+                            $decoded = json_decode($line, true);
+                            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                                $jsonData = $decoded;
+                                Log::debug('JSON found in error output', ['url' => $url]);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // If still no JSON, try combining output and error output
+                if ($jsonData === null && !empty($jsonOutput . $errorOutput)) {
+                    $combinedOutput = $jsonOutput . "\n" . $errorOutput;
+                    // Try to find JSON object in combined output
+                    if (preg_match('/\{[^{}]*"url"[^{}]*\}/', $combinedOutput, $matches)) {
+                        $decoded = json_decode($matches[0], true);
+                        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                            $jsonData = $decoded;
+                            Log::debug('JSON found in combined output', ['url' => $url]);
+                        }
                     }
                 }
                 
