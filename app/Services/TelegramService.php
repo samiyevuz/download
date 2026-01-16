@@ -187,10 +187,20 @@ class TelegramService
             $finalPhotoPath = $photoPath;
             $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
             if ($extension === 'webp') {
-                $finalPhotoPath = $this->convertWebpToJpg($photoPath);
-                if ($finalPhotoPath === null) {
-                    Log::warning('Failed to convert webp to jpg, trying original', ['path' => $photoPath]);
-                    $finalPhotoPath = $photoPath; // Fallback to original
+                Log::debug('Converting WebP to JPG before sending', ['path' => basename($photoPath)]);
+                $convertedPath = $this->convertWebpToJpg($photoPath);
+                if ($convertedPath !== null && file_exists($convertedPath)) {
+                    $finalPhotoPath = $convertedPath;
+                    Log::info('Using converted JPG instead of WebP', [
+                        'original' => basename($photoPath),
+                        'converted' => basename($convertedPath),
+                    ]);
+                } else {
+                    Log::warning('Failed to convert webp to jpg, using original', [
+                        'path' => $photoPath,
+                        'converted_path' => $convertedPath,
+                    ]);
+                    // Keep original path - Telegram might accept webp
                 }
             }
 
@@ -242,13 +252,22 @@ class TelegramService
                     return false;
                 }
 
+                Log::info('Photo sent successfully', [
+                    'chat_id' => $chatId,
+                    'photo' => basename($finalPhotoPath),
+                ]);
+                
                 return true;
             } finally {
-                fclose($fileHandle);
+                // Always close file handle
+                if (isset($fileHandle) && is_resource($fileHandle)) {
+                    fclose($fileHandle);
+                }
                 
                 // Clean up converted file if different from original
                 if ($finalPhotoPath !== $photoPath && file_exists($finalPhotoPath)) {
                     @unlink($finalPhotoPath);
+                    Log::debug('Cleaned up converted photo file', ['path' => basename($finalPhotoPath)]);
                 }
             }
         } catch (\Exception $e) {
@@ -270,42 +289,90 @@ class TelegramService
     private function convertWebpToJpg(string $webpPath): ?string
     {
         try {
+            // Validate input file
+            if (!file_exists($webpPath)) {
+                Log::warning('WebP file does not exist for conversion', ['path' => $webpPath]);
+                return null;
+            }
+
+            if (!is_readable($webpPath)) {
+                Log::warning('WebP file is not readable', ['path' => $webpPath]);
+                return null;
+            }
+
             // Check if GD extension is available
             if (!extension_loaded('gd')) {
-                Log::warning('GD extension not available, cannot convert webp');
+                Log::warning('GD extension not available, cannot convert webp', ['path' => $webpPath]);
                 return null;
             }
 
             // Check if webp support is available
             if (!function_exists('imagecreatefromwebp')) {
-                Log::warning('WebP support not available in GD');
+                Log::warning('WebP support not available in GD', ['path' => $webpPath]);
                 return null;
             }
+
+            if (!function_exists('imagejpeg')) {
+                Log::warning('JPEG support not available in GD', ['path' => $webpPath]);
+                return null;
+            }
+
+            Log::debug('Starting WebP to JPG conversion', [
+                'path' => basename($webpPath),
+                'size' => filesize($webpPath),
+            ]);
 
             // Create image from webp
             $image = @imagecreatefromwebp($webpPath);
             if ($image === false) {
-                Log::warning('Failed to create image from webp', ['path' => $webpPath]);
+                Log::warning('Failed to create image from webp', [
+                    'path' => $webpPath,
+                    'error' => error_get_last()['message'] ?? 'Unknown error',
+                ]);
                 return null;
             }
 
-            // Generate output path
-            $outputPath = str_replace(['.webp', '.WEBP'], '.jpg', $webpPath);
+            // Generate output path (replace .webp extension with .jpg)
+            $outputPath = preg_replace('/\.webp$/i', '.jpg', $webpPath);
             
+            // Ensure output path is different from input
+            if ($outputPath === $webpPath) {
+                $outputPath = $webpPath . '.jpg';
+            }
+
             // Convert to JPG with 90% quality
             $success = @imagejpeg($image, $outputPath, 90);
             imagedestroy($image);
 
-            if (!$success || !file_exists($outputPath)) {
-                Log::warning('Failed to save converted JPG', ['path' => $outputPath]);
+            if (!$success) {
+                Log::warning('imagejpeg failed', [
+                    'output_path' => $outputPath,
+                    'error' => error_get_last()['message'] ?? 'Unknown error',
+                ]);
                 return null;
             }
 
-            Log::info('WebP converted to JPG', [
+            if (!file_exists($outputPath)) {
+                Log::warning('Converted JPG file was not created', ['path' => $outputPath]);
+                return null;
+            }
+
+            // Verify converted file is readable and has content
+            $outputSize = filesize($outputPath);
+            if ($outputSize === false || $outputSize === 0) {
+                Log::warning('Converted JPG file is empty or invalid', [
+                    'path' => $outputPath,
+                    'size' => $outputSize,
+                ]);
+                @unlink($outputPath);
+                return null;
+            }
+
+            Log::info('WebP converted to JPG successfully', [
                 'original' => basename($webpPath),
                 'converted' => basename($outputPath),
                 'original_size' => filesize($webpPath),
-                'converted_size' => filesize($outputPath),
+                'converted_size' => $outputSize,
             ]);
 
             return $outputPath;
@@ -313,6 +380,7 @@ class TelegramService
             Log::error('Exception converting webp to jpg', [
                 'path' => $webpPath,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return null;
         }
@@ -445,43 +513,105 @@ class TelegramService
      */
     public function sendMediaGroup(int|string $chatId, array $photoPaths, ?string $caption = null): bool
     {
+        $fileHandles = [];
+        $convertedFiles = [];
+        
         try {
             if (empty($photoPaths)) {
+                Log::warning('sendMediaGroup called with empty photo paths', ['chat_id' => $chatId]);
                 return false;
             }
 
             // Telegram allows max 10 media in a group
             $photoPaths = array_slice($photoPaths, 0, 10);
-
-            // Convert webp files and prepare media array
-            $media = [];
-            $convertedFiles = [];
             
-            foreach ($photoPaths as $index => $photoPath) {
-                if (!file_exists($photoPath)) {
+            Log::info('Preparing media group', [
+                'chat_id' => $chatId,
+                'photos_count' => count($photoPaths),
+                'photo_paths' => array_map('basename', $photoPaths),
+            ]);
+
+            // Process files: validate, convert webp, prepare paths and media array
+            $processedFiles = [];
+            $media = [];
+            
+            foreach ($photoPaths as $originalPath) {
+                if (!file_exists($originalPath)) {
+                    Log::warning('Photo file does not exist in media group', [
+                        'chat_id' => $chatId,
+                        'path' => $originalPath,
+                    ]);
                     continue;
                 }
 
-                // Convert webp if needed
-                $finalPath = $photoPath;
-                $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
+                // Verify it's actually an image
+                $imageInfo = @getimagesize($originalPath);
+                if ($imageInfo === false) {
+                    Log::warning('File is not a valid image in media group', [
+                        'chat_id' => $chatId,
+                        'path' => $originalPath,
+                    ]);
+                    continue;
+                }
+
+                // Check file size (Telegram limit: 10MB for photos)
+                $fileSize = filesize($originalPath);
+                $maxFileSize = 10 * 1024 * 1024; // 10MB
+                
+                if ($fileSize > $maxFileSize) {
+                    Log::warning('Photo file too large for Telegram in media group', [
+                        'chat_id' => $chatId,
+                        'path' => $originalPath,
+                        'size_mb' => round($fileSize / 1024 / 1024, 2),
+                    ]);
+                    continue;
+                }
+
+                // Convert webp to jpg if needed
+                $finalPath = $originalPath;
+                $extension = strtolower(pathinfo($originalPath, PATHINFO_EXTENSION));
                 if ($extension === 'webp') {
-                    $converted = $this->convertWebpToJpg($photoPath);
-                    if ($converted !== null) {
+                    $converted = $this->convertWebpToJpg($originalPath);
+                    if ($converted !== null && file_exists($converted)) {
                         $finalPath = $converted;
                         $convertedFiles[] = $converted;
+                        Log::debug('WebP converted to JPG in media group', [
+                            'original' => basename($originalPath),
+                            'converted' => basename($converted),
+                        ]);
+                    } else {
+                        Log::warning('Failed to convert webp in media group, using original', [
+                            'path' => $originalPath,
+                        ]);
                     }
                 }
 
+                // Store processed file with its index for multipart
+                $mediaIndex = count($processedFiles);
+                $processedFiles[] = [
+                    'path' => $finalPath,
+                    'index' => $mediaIndex,
+                ];
+
                 $media[] = [
                     'type' => 'photo',
-                    'media' => 'attach://photo_' . $index,
+                    'media' => 'attach://photo_' . $mediaIndex,
                 ];
             }
 
-            if (empty($media)) {
+            if (empty($media) || empty($processedFiles)) {
+                Log::error('No valid photos found for media group', [
+                    'chat_id' => $chatId,
+                    'original_count' => count($photoPaths),
+                ]);
                 return false;
             }
+
+            Log::info('Media group prepared', [
+                'chat_id' => $chatId,
+                'media_count' => count($media),
+                'processed_files' => count($processedFiles),
+            ]);
 
             // Add caption to first media item
             if ($caption) {
@@ -493,46 +623,97 @@ class TelegramService
             $multipart = [
                 ['name' => 'chat_id', 'contents' => (string) $chatId],
                 ['name' => 'media', 'contents' => json_encode($media)],
-                ['name' => 'parse_mode', 'contents' => 'HTML'],
             ];
 
-            // Add each photo file (use converted paths if available)
-            foreach ($photoPaths as $index => $photoPath) {
-                if (!file_exists($photoPath)) {
+            // Add each photo file with correct index
+            foreach ($processedFiles as $processed) {
+                $finalPath = $processed['path'];
+                $mediaIndex = $processed['index'];
+                
+                if (!file_exists($finalPath)) {
+                    Log::warning('Processed file does not exist', [
+                        'chat_id' => $chatId,
+                        'path' => $finalPath,
+                        'index' => $mediaIndex,
+                    ]);
                     continue;
                 }
 
-                // Use converted path if webp was converted
-                $finalPath = $photoPath;
-                $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
-                if ($extension === 'webp') {
-                    // Find corresponding converted file
-                    foreach ($convertedFiles as $converted) {
-                        if (str_replace(['.webp', '.WEBP'], '.jpg', $photoPath) === $converted) {
-                            $finalPath = $converted;
-                            break;
-                        }
-                    }
+                $fileHandle = fopen($finalPath, 'r');
+                if ($fileHandle === false) {
+                    Log::error('Failed to open file for media group', [
+                        'chat_id' => $chatId,
+                        'path' => $finalPath,
+                        'index' => $mediaIndex,
+                    ]);
+                    continue;
                 }
 
-                if (file_exists($finalPath)) {
-                    $multipart[] = [
-                        'name' => 'photo_' . $index,
-                        'contents' => fopen($finalPath, 'r'),
-                        'filename' => basename($finalPath),
-                    ];
-                }
+                $fileHandles[] = $fileHandle;
+
+                $multipart[] = [
+                    'name' => 'photo_' . $mediaIndex,
+                    'contents' => $fileHandle,
+                    'filename' => basename($finalPath),
+                ];
             }
+
+            if (count($fileHandles) !== count($processedFiles)) {
+                Log::error('File handle count mismatch in media group', [
+                    'chat_id' => $chatId,
+                    'handles' => count($fileHandles),
+                    'processed' => count($processedFiles),
+                ]);
+                // Close opened handles
+                foreach ($fileHandles as $handle) {
+                    @fclose($handle);
+                }
+                return false;
+            }
+
+            Log::info('Sending media group to Telegram', [
+                'chat_id' => $chatId,
+                'media_count' => count($media),
+            ]);
 
             $response = Http::timeout(60)->asMultipart()->post(
                 "{$this->apiUrl}{$this->botToken}/sendMediaGroup",
                 $multipart
             );
 
-            // Close file handles
-            foreach ($multipart as $part) {
-                if (isset($part['contents']) && is_resource($part['contents'])) {
-                    fclose($part['contents']);
+            if (!$response->successful()) {
+                $responseBody = $response->body();
+                $responseData = $response->json();
+                
+                Log::error('Telegram API error sending media group', [
+                    'method' => 'sendMediaGroup',
+                    'chat_id' => $chatId,
+                    'status' => $response->status(),
+                    'body' => $responseBody,
+                    'response_data' => $responseData,
+                ]);
+                
+                return false;
+            }
+
+            Log::info('Media group sent successfully', [
+                'chat_id' => $chatId,
+                'media_count' => count($media),
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send Telegram media group', [
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return false;
+        } finally {
+            // Always close file handles
+            foreach ($fileHandles as $handle) {
+                if (is_resource($handle)) {
+                    @fclose($handle);
                 }
             }
 
@@ -540,26 +721,9 @@ class TelegramService
             foreach ($convertedFiles as $convertedFile) {
                 if (file_exists($convertedFile)) {
                     @unlink($convertedFile);
+                    Log::debug('Cleaned up converted file', ['path' => basename($convertedFile)]);
                 }
             }
-
-            if (!$response->successful()) {
-                Log::error('Telegram API error', [
-                    'method' => 'sendMediaGroup',
-                    'chat_id' => $chatId,
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-                return false;
-            }
-
-            return true;
-        } catch (\Exception $e) {
-            Log::error('Failed to send Telegram media group', [
-                'chat_id' => $chatId,
-                'error' => $e->getMessage(),
-            ]);
-            return false;
         }
     }
 
