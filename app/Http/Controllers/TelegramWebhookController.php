@@ -162,8 +162,36 @@ class TelegramWebhookController extends Controller
 
         // Handle /start command
         if ($text === '/start') {
-            $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
-            $this->telegramService->sendMessage($chatId, $welcomeMessage);
+            // Check if language is already selected
+            $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
+            
+            if ($selectedLanguage) {
+                // Language already selected, send welcome message in selected language
+                try {
+                    \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
+                } catch (\Exception $e) {
+                    Log::warning('Failed to dispatch welcome message job', [
+                        'chat_id' => $chatId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Fallback: send simple welcome message
+                    $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
+                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                }
+            } else {
+                // Send language selection keyboard
+                try {
+                    \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                } catch (\Exception $e) {
+                    Log::warning('Failed to dispatch language selection job', [
+                        'chat_id' => $chatId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Fallback: send simple welcome message
+                    $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
+                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                }
+            }
             return;
         }
 
