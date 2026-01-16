@@ -51,7 +51,12 @@ class YtDlpService
                 mkdir($outputDir, 0755, true);
             }
 
-            // Build yt-dlp command arguments
+            // Check if this is an Instagram URL and use enhanced method
+            if ($this->isInstagramUrl($url)) {
+                return $this->downloadInstagram($url, $outputDir);
+            }
+
+            // Build yt-dlp command arguments for TikTok or other platforms
             // Note: URL is already validated and sanitized by UrlValidator
             // Process class handles argument escaping automatically
             $arguments = [
@@ -61,10 +66,6 @@ class YtDlpService
                 '--quiet',
                 '--no-progress',
                 '--ignore-errors',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                '--referer', 'https://www.instagram.com/',
-                '--add-header', 'Accept-Language:en-US,en;q=0.9',
-                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
                 '--format', 'best',
                 $url, // URL is already validated and sanitized
@@ -491,5 +492,205 @@ class YtDlpService
         $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'];
         $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
         return in_array($extension, $imageExtensions);
+    }
+
+    /**
+     * Check if URL is Instagram
+     *
+     * @param string $url
+     * @return bool
+     */
+    private function isInstagramUrl(string $url): bool
+    {
+        return str_contains($url, 'instagram.com');
+    }
+
+    /**
+     * Download Instagram media with enhanced method (cookies + fallback)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagram(string $url, string $outputDir): array
+    {
+        $cookiesPath = config('telegram.instagram_cookies_path');
+        
+        // Method 1: Try with cookies (most reliable)
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            try {
+                return $this->downloadWithCookies($url, $outputDir, $cookiesPath);
+            } catch (\Exception $e) {
+                Log::warning('Instagram download with cookies failed, trying fallback', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Method 2: Fallback to enhanced headers
+        return $this->downloadWithEnhancedHeaders($url, $outputDir);
+    }
+
+    /**
+     * Download with Instagram cookies (most reliable)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @param string $cookiesPath
+     * @return array
+     */
+    private function downloadWithCookies(string $url, string $outputDir, string $cookiesPath): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--cookies', $cookiesPath,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--referer', 'https://www.instagram.com/',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best',
+            $url,
+        ];
+
+        return $this->executeDownload($arguments, $url, $outputDir);
+    }
+
+    /**
+     * Download with enhanced headers (fallback)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadWithEnhancedHeaders(string $url, string $outputDir): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--referer', 'https://www.instagram.com/',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept-Encoding:gzip, deflate, br',
+            '--add-header', 'DNT:1',
+            '--add-header', 'Connection:keep-alive',
+            '--add-header', 'Upgrade-Insecure-Requests:1',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best',
+            $url,
+        ];
+
+        return $this->executeDownload($arguments, $url, $outputDir);
+    }
+
+    /**
+     * Execute download process (extracted from original download method)
+     *
+     * @param array $arguments
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function executeDownload(array $arguments, string $url, string $outputDir): array
+    {
+        // Verify and resolve yt-dlp path
+        $ytDlpPath = $this->ytDlpPath;
+        
+        if (!file_exists($ytDlpPath) || !is_executable($ytDlpPath)) {
+            $whichYtDlp = trim(shell_exec('which yt-dlp 2>/dev/null') ?: '');
+            if ($whichYtDlp && file_exists($whichYtDlp) && is_executable($whichYtDlp)) {
+                $ytDlpPath = $whichYtDlp;
+            } else {
+                $commonPaths = [
+                    '/usr/local/bin/yt-dlp',
+                    '/usr/bin/yt-dlp',
+                    '/snap/bin/yt-dlp',
+                    getenv('HOME') . '/bin/yt-dlp',
+                    '/var/www/sardor/data/bin/yt-dlp',
+                ];
+                
+                foreach ($commonPaths as $commonPath) {
+                    if (file_exists($commonPath) && is_executable($commonPath)) {
+                        $ytDlpPath = $commonPath;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (!file_exists($ytDlpPath) || !is_executable($ytDlpPath)) {
+            throw new \RuntimeException("yt-dlp not found or not executable at: {$ytDlpPath}");
+        }
+
+        $arguments[0] = $ytDlpPath;
+
+        $process = new Process($arguments);
+        $process->setTimeout($this->timeout);
+        $process->setIdleTimeout($this->timeout);
+        $process->setWorkingDirectory($outputDir);
+        $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
+
+        Log::info('Starting yt-dlp download', [
+            'url' => $url,
+            'output_dir' => $outputDir,
+            'timeout' => $this->timeout,
+            'yt_dlp_path' => $ytDlpPath,
+            'method' => isset($arguments[array_search('--cookies', $arguments) ?? []]) ? 'with-cookies' : 'enhanced-headers',
+        ]);
+
+        try {
+            $process->run(function ($type, $buffer) use ($url) {
+                Log::debug('yt-dlp output', [
+                    'url' => $url,
+                    'type' => $type === Process::ERR ? 'stderr' : 'stdout',
+                    'buffer' => substr($buffer, 0, 1000),
+                ]);
+            });
+
+            if (!$process->isSuccessful()) {
+                $errorOutput = $process->getErrorOutput();
+                $stdOutput = $process->getOutput();
+                Log::error('yt-dlp download failed', [
+                    'url' => $url,
+                    'exit_code' => $process->getExitCode(),
+                    'error' => $errorOutput,
+                    'output' => substr($stdOutput, 0, 500),
+                    'full_command' => implode(' ', $arguments),
+                ]);
+                throw new \RuntimeException('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
+            }
+        } catch (ProcessTimedOutException $e) {
+            $this->forceKillProcess($process);
+            throw new \RuntimeException('Download timeout after ' . $this->timeout . ' seconds');
+        } catch (\Exception $e) {
+            $this->forceKillProcess($process);
+            throw $e;
+        } finally {
+            if ($process->isRunning()) {
+                $this->forceKillProcess($process);
+            }
+        }
+
+        $downloadedFiles = $this->findDownloadedFiles($outputDir);
+
+        if (empty($downloadedFiles)) {
+            throw new \RuntimeException('No files were downloaded');
+        }
+
+        Log::info('Download completed', [
+            'url' => $url,
+            'files_count' => count($downloadedFiles),
+        ]);
+
+        return $downloadedFiles;
     }
 }

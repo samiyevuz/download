@@ -46,4 +46,15 @@ return [
     'temp_storage_path' => storage_path('app/temp/downloads'),
     
     'yt_dlp_path' => env('YT_DLP_PATH', 'yt-dlp'),
+    
+    /*
+    |--------------------------------------------------------------------------
+    | Instagram Settings
+    |--------------------------------------------------------------------------
+    |
+    | Configuration for Instagram downloads (cookies for better reliability).
+    |
+    */
+    
+    'instagram_cookies_path' => env('INSTAGRAM_COOKIES_PATH', null),
 ];
