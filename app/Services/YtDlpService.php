@@ -53,15 +53,26 @@ class YtDlpService
 
             // Check if this is an Instagram URL and use enhanced method
             if ($this->isInstagramUrl($url)) {
-                // First, try to get media info to determine if it's an image post
+                // First, try to get media info to determine if it's an image or video post
                 try {
                     $mediaInfo = $this->getMediaInfo($url);
                     $isImagePost = $this->isImagePost($mediaInfo);
+                    $isVideoPost = $this->isVideoPost($mediaInfo);
                     
-                    if ($isImagePost) {
-                        // For image posts, use image-specific format
+                    Log::info('Instagram media type detected', [
+                        'url' => $url,
+                        'is_image' => $isImagePost,
+                        'is_video' => $isVideoPost,
+                    ]);
+                    
+                    if ($isImagePost && !$isVideoPost) {
+                        // For image-only posts, use image-specific format
                         return $this->downloadInstagramImage($url, $outputDir);
+                    } elseif ($isVideoPost && !$isImagePost) {
+                        // For video-only posts, use video-specific format
+                        return $this->downloadInstagramVideo($url, $outputDir);
                     }
+                    // If both or unclear, use default method
                 } catch (\Exception $e) {
                     Log::warning('Failed to get media info, using default method', [
                         'url' => $url,
@@ -455,22 +466,63 @@ class YtDlpService
      */
     private function isImagePost(array $mediaInfo): bool
     {
-        // Check if there are video formats
-        $hasVideoFormats = !empty($mediaInfo['formats']) && 
-            array_filter($mediaInfo['formats'], function($format) {
-                return isset($format['vcodec']) && $format['vcodec'] !== 'none';
-            });
-        
-        // Check if it's a carousel (multiple images)
-        $isCarousel = isset($mediaInfo['_type']) && $mediaInfo['_type'] === 'playlist';
-        
-        // If no video formats and not a video, it's likely an image
-        if (!$hasVideoFormats && !isset($mediaInfo['format_id'])) {
+        // Check ext in info - most reliable
+        if (isset($mediaInfo['ext']) && in_array(strtolower($mediaInfo['ext']), ['jpg', 'jpeg', 'png', 'webp'])) {
             return true;
         }
         
-        // Check ext in info
-        if (isset($mediaInfo['ext']) && in_array(strtolower($mediaInfo['ext']), ['jpg', 'jpeg', 'png', 'webp'])) {
+        // Check if there are video formats
+        $hasVideoFormats = false;
+        if (!empty($mediaInfo['formats'])) {
+            foreach ($mediaInfo['formats'] as $format) {
+                if (isset($format['vcodec']) && $format['vcodec'] !== 'none' && $format['vcodec'] !== null) {
+                    $hasVideoFormats = true;
+                    break;
+                }
+            }
+        }
+        
+        // If no video formats, it's likely an image
+        if (!$hasVideoFormats) {
+            // Check if it's a carousel (multiple images)
+            $isCarousel = isset($mediaInfo['_type']) && $mediaInfo['_type'] === 'playlist';
+            if ($isCarousel) {
+                return true;
+            }
+            
+            // Check if format_id suggests image
+            if (isset($mediaInfo['format_id']) && str_contains(strtolower($mediaInfo['format_id']), 'jpg')) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Check if Instagram post is a video post
+     *
+     * @param array $mediaInfo
+     * @return bool
+     */
+    private function isVideoPost(array $mediaInfo): bool
+    {
+        // Check ext in info - most reliable
+        if (isset($mediaInfo['ext']) && in_array(strtolower($mediaInfo['ext']), ['mp4', 'webm', 'mkv', 'mov'])) {
+            return true;
+        }
+        
+        // Check if there are video formats
+        if (!empty($mediaInfo['formats'])) {
+            foreach ($mediaInfo['formats'] as $format) {
+                if (isset($format['vcodec']) && $format['vcodec'] !== 'none' && $format['vcodec'] !== null) {
+                    return true;
+                }
+            }
+        }
+        
+        // Check if format_id suggests video
+        if (isset($mediaInfo['format_id']) && str_contains(strtolower($mediaInfo['format_id']), 'mp4')) {
             return true;
         }
         
@@ -505,6 +557,33 @@ class YtDlpService
     }
     
     /**
+     * Download Instagram video post (specific method for videos)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramVideo(string $url, string $outputDir): array
+    {
+        $cookiesPath = config('telegram.instagram_cookies_path');
+        
+        // Method 1: Try with cookies
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            try {
+                return $this->downloadInstagramVideoWithCookies($url, $outputDir, $cookiesPath);
+            } catch (\Exception $e) {
+                Log::warning('Instagram video download with cookies failed, trying fallback', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+        
+        // Method 2: Try without cookies
+        return $this->downloadInstagramVideoWithoutCookies($url, $outputDir);
+    }
+    
+    /**
      * Download Instagram image with cookies
      *
      * @param string $url
@@ -530,7 +609,12 @@ class YtDlpService
             $url,
         ];
 
-        return $this->executeDownload($arguments, $url, $outputDir);
+        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+        
+        // Filter to only return image files (exclude videos)
+        return array_filter($downloadedFiles, function($file) {
+            return $this->isImage($file);
+        });
     }
     
     /**
@@ -559,7 +643,80 @@ class YtDlpService
             $url,
         ];
 
-        return $this->executeDownload($arguments, $url, $outputDir);
+        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+        
+        // Filter to only return image files (exclude videos)
+        return array_filter($downloadedFiles, function($file) {
+            return $this->isImage($file);
+        });
+    }
+    
+    /**
+     * Download Instagram video with cookies
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @param string $cookiesPath
+     * @return array
+     */
+    private function downloadInstagramVideoWithCookies(string $url, string $outputDir, string $cookiesPath): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--cookies', $cookiesPath,
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=mp4]/best[ext=webm]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            $url,
+        ];
+
+        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+        
+        // Filter to only return video files (exclude images)
+        return array_filter($downloadedFiles, function($file) {
+            return $this->isVideo($file);
+        });
+    }
+    
+    /**
+     * Download Instagram video without cookies
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramVideoWithoutCookies(string $url, string $outputDir): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=mp4]/best[ext=webm]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            $url,
+        ];
+
+        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+        
+        // Filter to only return video files (exclude images)
+        return array_filter($downloadedFiles, function($file) {
+            return $this->isVideo($file);
+        });
     }
 
     /**
@@ -779,14 +936,33 @@ class YtDlpService
         ];
 
         try {
-            return $this->executeDownload($arguments, $url, $outputDir);
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter to only return image files (exclude videos)
+            $imageFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            
+            if (!empty($imageFiles)) {
+                return array_values($imageFiles);
+            }
+            
+            // If no images found, return all files (fallback)
+            return $downloadedFiles;
         } catch (\Exception $e) {
             // If image format fails, try video format
             if (str_contains(strtolower($e->getMessage()), 'no video formats') || 
                 str_contains(strtolower($e->getMessage()), 'no formats found')) {
                 Log::info('Image format failed, trying video format', ['url' => $url]);
                 $arguments[array_search('best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best', $arguments)] = 'best[ext=mp4]/best[ext=webm]/best';
-                return $this->executeDownload($arguments, $url, $outputDir);
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return video files
+                $videoFiles = array_filter($downloadedFiles, function($file) {
+                    return $this->isVideo($file);
+                });
+                
+                return !empty($videoFiles) ? array_values($videoFiles) : $downloadedFiles;
             }
             throw $e;
         }
@@ -827,14 +1003,42 @@ class YtDlpService
         ];
 
         try {
-            return $this->executeDownload($arguments, $url, $outputDir);
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Separate images and videos
+            $imageFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            $videoFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isVideo($file);
+            });
+            
+            // If we have both, prefer images (since this is enhanced headers method, might be image post)
+            if (!empty($imageFiles) && !empty($videoFiles)) {
+                Log::info('Both images and videos downloaded, returning only images', [
+                    'url' => $url,
+                    'images_count' => count($imageFiles),
+                    'videos_count' => count($videoFiles),
+                ]);
+                return array_values($imageFiles);
+            }
+            
+            // Return what we have
+            return $downloadedFiles;
         } catch (\Exception $e) {
             // If image format fails with "No video formats", try video-only format
             if (str_contains(strtolower($e->getMessage()), 'no video formats') || 
                 str_contains(strtolower($e->getMessage()), 'no formats found')) {
                 Log::info('Image format failed, trying video format', ['url' => $url]);
                 $arguments[array_search('best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best', $arguments)] = 'best[ext=mp4]/best[ext=webm]/best';
-                return $this->executeDownload($arguments, $url, $outputDir);
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return video files
+                $videoFiles = array_filter($downloadedFiles, function($file) {
+                    return $this->isVideo($file);
+                });
+                
+                return !empty($videoFiles) ? array_values($videoFiles) : $downloadedFiles;
             }
             
             // Try alternative user agent
@@ -844,7 +1048,22 @@ class YtDlpService
             ]);
             
             $arguments[array_search('Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1', $arguments)] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-            return $this->executeDownload($arguments, $url, $outputDir);
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter based on what we get
+            $imageFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            $videoFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isVideo($file);
+            });
+            
+            // Prefer images if both exist
+            if (!empty($imageFiles) && !empty($videoFiles)) {
+                return array_values($imageFiles);
+            }
+            
+            return $downloadedFiles;
         }
     }
 

@@ -115,6 +115,44 @@ class DownloadMediaJob implements ShouldQueue
                     $images[] = $file;
                 }
             }
+            
+            // Log what was downloaded
+            Log::info('Downloaded files separated', [
+                'chat_id' => $this->chatId,
+                'url' => $this->url,
+                'total_files' => count($downloadedFiles),
+                'videos_count' => count($videos),
+                'images_count' => count($images),
+                'video_files' => array_map('basename', $videos),
+                'image_files' => array_map('basename', $images),
+            ]);
+            
+            // If both videos and images are downloaded, prefer the primary type
+            // (This should not happen if media type detection works correctly)
+            if (!empty($videos) && !empty($images)) {
+                Log::warning('Both videos and images downloaded, this should not happen', [
+                    'chat_id' => $this->chatId,
+                    'url' => $this->url,
+                    'videos_count' => count($videos),
+                    'images_count' => count($images),
+                ]);
+                
+                // Determine primary type based on file count or size
+                // If more videos, use videos; if more images, use images
+                if (count($videos) >= count($images)) {
+                    Log::info('Preferring videos over images', [
+                        'chat_id' => $this->chatId,
+                        'url' => $this->url,
+                    ]);
+                    $images = []; // Remove images, keep only videos
+                } else {
+                    Log::info('Preferring images over videos', [
+                        'chat_id' => $this->chatId,
+                        'url' => $this->url,
+                    ]);
+                    $videos = []; // Remove videos, keep only images
+                }
+            }
 
             // Get localized caption
             $captions = [
