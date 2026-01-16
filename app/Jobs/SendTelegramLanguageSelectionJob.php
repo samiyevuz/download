@@ -29,6 +29,11 @@ class SendTelegramLanguageSelectionJob implements ShouldQueue
     public function handle(TelegramService $telegramService): void
     {
         try {
+            Log::info('SendTelegramLanguageSelectionJob started', [
+                'chat_id' => $this->chatId,
+                'attempt' => $this->attempts(),
+            ]);
+            
             $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
             
             // Professional layout: each button on its own row (full width)
@@ -44,11 +49,18 @@ class SendTelegramLanguageSelectionJob implements ShouldQueue
                 ],
             ];
 
-            $telegramService->sendMessageWithKeyboard($this->chatId, $text, $keyboard);
+            $result = $telegramService->sendMessageWithKeyboard($this->chatId, $text, $keyboard);
+            
+            Log::info('SendTelegramLanguageSelectionJob completed', [
+                'chat_id' => $this->chatId,
+                'result' => $result,
+            ]);
         } catch (\Exception $e) {
             Log::error('Failed to send language selection', [
                 'chat_id' => $this->chatId,
+                'attempt' => $this->attempts(),
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             throw $e;
         }

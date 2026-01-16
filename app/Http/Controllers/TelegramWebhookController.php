@@ -164,12 +164,46 @@ class TelegramWebhookController extends Controller
         if ($text === '/start') {
             // Send language selection keyboard FIRST (before subscription check)
             try {
+                Log::info('Dispatching language selection job', [
+                    'chat_id' => $chatId,
+                ]);
+                
                 \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                
+                Log::info('Language selection job dispatched successfully', [
+                    'chat_id' => $chatId,
+                ]);
             } catch (\Exception $e) {
-                Log::warning('Failed to dispatch language selection job', [
+                Log::error('Failed to dispatch language selection job', [
                     'chat_id' => $chatId,
                     'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
+                
+                // Fallback: send directly if job dispatch fails
+                try {
+                    $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
+                    $keyboard = [
+                        [
+                            ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
+                        ],
+                        [
+                            ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
+                        ],
+                        [
+                            ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
+                        ],
+                    ];
+                    $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
+                    Log::info('Language selection sent directly (fallback)', [
+                        'chat_id' => $chatId,
+                    ]);
+                } catch (\Exception $fallbackError) {
+                    Log::error('Fallback language selection also failed', [
+                        'chat_id' => $chatId,
+                        'error' => $fallbackError->getMessage(),
+                    ]);
+                }
             }
             return;
         }

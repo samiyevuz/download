@@ -495,6 +495,12 @@ class TelegramService
     public function sendMessageWithKeyboard(int|string $chatId, string $text, array $keyboard, ?int $replyToMessageId = null): ?int
     {
         try {
+            Log::debug('Sending message with keyboard', [
+                'chat_id' => $chatId,
+                'text_length' => strlen($text),
+                'keyboard_buttons' => count($keyboard),
+            ]);
+            
             $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/sendMessage", [
                 'chat_id' => $chatId,
                 'text' => $text,
@@ -516,11 +522,19 @@ class TelegramService
             }
 
             $data = $response->json();
-            return $data['result']['message_id'] ?? null;
+            $messageId = $data['result']['message_id'] ?? null;
+            
+            Log::info('Message with keyboard sent successfully', [
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+            ]);
+            
+            return $messageId;
         } catch (\Exception $e) {
             Log::error('Failed to send Telegram message with keyboard', [
                 'chat_id' => $chatId,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return null;
         }
