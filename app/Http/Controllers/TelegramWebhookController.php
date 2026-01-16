@@ -91,20 +91,24 @@ class TelegramWebhookController extends Controller
         }
 
         // Check membership
-        $isMember = $this->telegramService->checkChannelMembership($userId);
+        $membershipResult = $this->telegramService->checkChannelMembership($userId);
+        $isMember = $membershipResult['is_member'];
+        $missingChannels = $membershipResult['missing_channels'];
         
         Log::debug('Channel membership check result', [
             'user_id' => $userId,
             'is_member' => $isMember,
+            'missing_channels' => $missingChannels,
         ]);
 
         if (!$isMember) {
-            // Send subscription required message
+            // Send subscription required message with missing channels info
             Log::info('User not subscribed, sending subscription required message', [
                 'user_id' => $userId,
                 'language' => $language,
+                'missing_channels' => $missingChannels,
             ]);
-            $this->telegramService->sendSubscriptionRequiredMessage($userId, $language);
+            $this->telegramService->sendSubscriptionRequiredMessage($userId, $language, $missingChannels);
             return false;
         }
 
@@ -217,7 +221,9 @@ class TelegramWebhookController extends Controller
             }
 
             // Check membership
-            $isMember = $this->telegramService->checkChannelMembership($userId);
+            $membershipResult = $this->telegramService->checkChannelMembership($userId);
+            $isMember = $membershipResult['is_member'];
+            $missingChannels = $membershipResult['missing_channels'];
 
             // Answer callback query
             try {
@@ -246,10 +252,17 @@ class TelegramWebhookController extends Controller
                         \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
                     }
                 } else {
+                    // Show which channels are missing
+                    $missingChannelsList = array_map(function($channel) {
+                        return "@{$channel}";
+                    }, $missingChannels);
+                    
+                    $missingChannelsText = implode(', ', $missingChannelsList);
+                    
                     $errorMessages = [
-                        'uz' => '❌ Hali barcha kanallarga a\'zo bo\'lmadingiz. Iltimos, kanallarga o\'ting va qayta urinib ko\'ring.',
-                        'ru' => '❌ Вы еще не подписались на все каналы. Пожалуйста, перейдите в каналы и попробуйте снова.',
-                        'en' => '❌ You have not subscribed to all channels yet. Please join the channels and try again.',
+                        'uz' => "❌ Hali quyidagi kanallarga a'zo bo'lmadingiz:\n\n{$missingChannelsText}\n\nIltimos, kanallarga o'ting va qayta urinib ko'ring.",
+                        'ru' => "❌ Вы еще не подписались на следующие каналы:\n\n{$missingChannelsText}\n\nПожалуйста, перейдите в каналы и попробуйте снова.",
+                        'en' => "❌ You have not subscribed to the following channels yet:\n\n{$missingChannelsText}\n\nPlease join the channels and try again.",
                     ];
                     $text = $errorMessages[$language] ?? $errorMessages['en'];
                     \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, true)->onQueue('telegram');

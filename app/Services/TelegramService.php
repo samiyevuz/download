@@ -389,15 +389,16 @@ class TelegramService
      * Check if user is member of required channel(s)
      *
      * @param int|string $userId
-     * @return bool
+     * @return array ['is_member' => bool, 'missing_channels' => array]
      */
-    public function checkChannelMembership(int|string $userId): bool
+    public function checkChannelMembership(int|string $userId): array
     {
         $channels = $this->getRequiredChannels();
+        $missingChannels = [];
 
         // If no channel is configured, allow access
         if (empty($channels)) {
-            return true;
+            return ['is_member' => true, 'missing_channels' => []];
         }
 
         // Check all channels - user must be member of ALL channels
@@ -450,7 +451,8 @@ class TelegramService
                         ]);
                     }
                     
-                    return false;
+                    $missingChannels[] = $channel;
+                    continue;
                 }
 
                 $status = $responseData['result']['status'] ?? null;
@@ -474,7 +476,8 @@ class TelegramService
                         'status' => $status,
                         'valid_statuses' => $validStatuses,
                     ]);
-                    return false;
+                    $missingChannels[] = $channel;
+                    continue;
                 }
 
                 Log::info('User is a member of channel', [
@@ -489,11 +492,14 @@ class TelegramService
                     'error' => $e->getMessage(),
                     'trace' => $e->getTraceAsString(),
                 ]);
-                return false;
+                $missingChannels[] = $channel;
             }
         }
 
-        return true;
+        return [
+            'is_member' => empty($missingChannels),
+            'missing_channels' => $missingChannels,
+        ];
     }
 
     /**
@@ -501,9 +507,10 @@ class TelegramService
      *
      * @param int|string $chatId
      * @param string $language
+     * @param array $missingChannels List of channels user is not subscribed to
      * @return int|null Message ID if successful, null otherwise
      */
-    public function sendSubscriptionRequiredMessage(int|string $chatId, string $language = 'en'): ?int
+    public function sendSubscriptionRequiredMessage(int|string $chatId, string $language = 'en', array $missingChannels = []): ?int
     {
         $channels = $this->getRequiredChannels();
 
@@ -511,20 +518,42 @@ class TelegramService
             return null;
         }
 
+        // If missing channels are provided, show which ones are missing
+        $missingChannelsText = '';
+        if (!empty($missingChannels)) {
+            $missingChannelsList = array_map(function($channel) {
+                return "• @{$channel}";
+            }, $missingChannels);
+            
+            $missingChannelsText = "\n\n❌ <b>A'zo bo'lmagan kanallar:</b>\n" . implode("\n", $missingChannelsList);
+            
+            // Localize missing channels text
+            $missingTexts = [
+                'uz' => "\n\n❌ <b>A'zo bo'lmagan kanallar:</b>\n",
+                'ru' => "\n\n❌ <b>Каналы, на которые вы не подписаны:</b>\n",
+                'en' => "\n\n❌ <b>Channels you're not subscribed to:</b>\n",
+            ];
+            
+            $missingChannelsText = ($missingTexts[$language] ?? $missingTexts['en']) . implode("\n", $missingChannelsList);
+        }
+
         $messages = [
-            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
-            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующие каналы и нажмите <b>✅ Проверить</b>.",
-            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channels and press <b>✅ Check</b>.",
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.{$missingChannelsText}",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующие каналы и нажмите <b>✅ Проверить</b>.{$missingChannelsText}",
+            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channels and press <b>✅ Check</b>.{$missingChannelsText}",
         ];
 
         $text = $messages[$language] ?? $messages['en'];
 
         // Create keyboard with channel buttons
+        // If missing channels are provided, show only those channels
+        $channelsToShow = !empty($missingChannels) ? $missingChannels : $channels;
+        
         $keyboard = [];
         
         // Add channel buttons (max 2 per row for better layout)
         $channelButtons = [];
-        foreach ($channels as $channel) {
+        foreach ($channelsToShow as $channel) {
             $channelLink = ltrim($channel, '@');
             // Format channel name: capitalize first letter (TheUzSoft, Samiyev_blog)
             $channelButtonText = ucfirst($channelLink);
