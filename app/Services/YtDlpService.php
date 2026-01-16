@@ -35,6 +35,44 @@ class YtDlpService
     }
 
     /**
+     * Get Instagram cookies paths (supports multiple cookies for rotation)
+     *
+     * @return array Array of cookie file paths
+     */
+    private function getInstagramCookiesPaths(): array
+    {
+        $paths = [];
+        
+        // First, check for multiple cookies (comma-separated)
+        $multipleCookies = config('telegram.instagram_cookies_paths');
+        if (!empty($multipleCookies)) {
+            $cookieList = explode(',', $multipleCookies);
+            foreach ($cookieList as $cookiePath) {
+                $cookiePath = trim($cookiePath);
+                if (!empty($cookiePath)) {
+                    $paths[] = $cookiePath;
+                }
+            }
+        }
+        
+        // Fallback to single cookie path
+        $singleCookie = config('telegram.instagram_cookies_path');
+        if (!empty($singleCookie) && !in_array($singleCookie, $paths)) {
+            $paths[] = $singleCookie;
+        }
+        
+        // Remove duplicates and filter out empty paths
+        $paths = array_unique(array_filter($paths));
+        
+        Log::debug('Instagram cookies paths', [
+            'paths_count' => count($paths),
+            'paths' => array_map('basename', $paths),
+        ]);
+        
+        return $paths;
+    }
+
+    /**
      * Download media from URL
      *
      * @param string $url
@@ -435,7 +473,10 @@ class YtDlpService
     public function getMediaInfo(string $url): array
     {
         try {
-            $cookiesPath = config('telegram.instagram_cookies_path');
+            // Try with first available cookie
+            $cookiesPaths = $this->getInstagramCookiesPaths();
+            $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
+            
             $arguments = [
                 $this->ytDlpPath,
                 '--dump-json',
@@ -569,25 +610,48 @@ class YtDlpService
      */
     private function downloadInstagramImage(string $url, string $outputDir): array
     {
-        $cookiesPath = config('telegram.instagram_cookies_path');
         $allErrors = [];
         
-        // Method 1: Try with cookies (most reliable)
-        if ($cookiesPath && file_exists($cookiesPath)) {
-            try {
-                $result = $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
-                if (!empty($result)) {
-                    Log::info('Instagram image downloaded successfully with cookies', [
+        // Method 1: Try with multiple cookies (rotation for reliability)
+        $cookiesPaths = $this->getInstagramCookiesPaths();
+        
+        foreach ($cookiesPaths as $index => $cookiesPath) {
+            if ($cookiesPath && file_exists($cookiesPath) && filesize($cookiesPath) > 100) {
+                try {
+                    Log::info('Trying Instagram image download with cookie file', [
                         'url' => $url,
-                        'files_count' => count($result),
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                        'cookie_size' => filesize($cookiesPath),
                     ]);
-                    return $result;
+                    
+                    $result = $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
+                    if (!empty($result)) {
+                        Log::info('Instagram image downloaded successfully with cookies', [
+                            'url' => $url,
+                            'files_count' => count($result),
+                            'cookie_index' => $index + 1,
+                            'cookie_path' => basename($cookiesPath),
+                        ]);
+                        return $result;
+                    }
+                } catch (\Exception $e) {
+                    $allErrors[] = "Cookie #{$index} ({$cookiesPath}): " . $e->getMessage();
+                    Log::warning('Instagram image download with cookie failed, trying next', [
+                        'url' => $url,
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Continue to next cookie
+                    continue;
                 }
-            } catch (\Exception $e) {
-                $allErrors[] = 'Cookies method: ' . $e->getMessage();
-                Log::warning('Instagram image download with cookies failed', [
-                    'url' => $url,
-                    'error' => $e->getMessage(),
+            } else {
+                Log::debug('Skipping invalid cookie file', [
+                    'cookie_index' => $index + 1,
+                    'cookie_path' => $cookiesPath,
+                    'exists' => $cookiesPath && file_exists($cookiesPath),
+                    'size' => ($cookiesPath && file_exists($cookiesPath)) ? filesize($cookiesPath) : 0,
                 ]);
             }
         }
@@ -682,17 +746,37 @@ class YtDlpService
      */
     private function downloadInstagramVideo(string $url, string $outputDir): array
     {
-        $cookiesPath = config('telegram.instagram_cookies_path');
+        // Try with multiple cookies (rotation for reliability)
+        $cookiesPaths = $this->getInstagramCookiesPaths();
         
-        // Method 1: Try with cookies
-        if ($cookiesPath && file_exists($cookiesPath)) {
-            try {
-                return $this->downloadInstagramVideoWithCookies($url, $outputDir, $cookiesPath);
-            } catch (\Exception $e) {
-                Log::warning('Instagram video download with cookies failed, trying fallback', [
-                    'url' => $url,
-                    'error' => $e->getMessage(),
-                ]);
+        foreach ($cookiesPaths as $index => $cookiesPath) {
+            if ($cookiesPath && file_exists($cookiesPath) && filesize($cookiesPath) > 100) {
+                try {
+                    Log::info('Trying Instagram video download with cookie file', [
+                        'url' => $url,
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                    ]);
+                    
+                    $result = $this->downloadInstagramVideoWithCookies($url, $outputDir, $cookiesPath);
+                    if (!empty($result)) {
+                        Log::info('Instagram video downloaded successfully with cookies', [
+                            'url' => $url,
+                            'cookie_index' => $index + 1,
+                            'cookie_path' => basename($cookiesPath),
+                        ]);
+                        return $result;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Instagram video download with cookie failed, trying next', [
+                        'url' => $url,
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Continue to next cookie
+                    continue;
+                }
             }
         }
         
@@ -976,7 +1060,9 @@ class YtDlpService
      */
     private function downloadInstagramImageDirect(string $url, string $outputDir): array
     {
-        $cookiesPath = config('telegram.instagram_cookies_path');
+        // Try with first available cookie
+        $cookiesPaths = $this->getInstagramCookiesPaths();
+        $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
         
         // Method 1: Try with --write-thumbnail and --skip-download (most reliable for images)
         if ($cookiesPath && file_exists($cookiesPath)) {
@@ -1082,7 +1168,9 @@ class YtDlpService
      */
     private function downloadInstagramImageMinimal(string $url, string $outputDir): array
     {
-        $cookiesPath = config('telegram.instagram_cookies_path');
+        // Try with first available cookie
+        $cookiesPaths = $this->getInstagramCookiesPaths();
+        $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
         
         // Minimal arguments - no format selector, let yt-dlp decide
         $arguments = [
@@ -1480,31 +1568,45 @@ class YtDlpService
      */
     private function downloadInstagram(string $url, string $outputDir): array
     {
-        $cookiesPath = config('telegram.instagram_cookies_path');
+        // Try with multiple cookies (rotation for reliability)
+        $cookiesPaths = $this->getInstagramCookiesPaths();
         
-        // Method 1: Try with cookies (most reliable)
-        if ($cookiesPath && file_exists($cookiesPath) && filesize($cookiesPath) > 100) {
-            try {
-                $result = $this->downloadWithCookies($url, $outputDir, $cookiesPath);
-                
-                // If we got files, return them
-                if (!empty($result)) {
-                    return $result;
+        foreach ($cookiesPaths as $index => $cookiesPath) {
+            if ($cookiesPath && file_exists($cookiesPath) && filesize($cookiesPath) > 100) {
+                try {
+                    Log::info('Trying Instagram download with cookie file', [
+                        'url' => $url,
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                    ]);
+                    
+                    $result = $this->downloadWithCookies($url, $outputDir, $cookiesPath);
+                    
+                    // If we got files, return them
+                    if (!empty($result)) {
+                        Log::info('Instagram downloaded successfully with cookies', [
+                            'url' => $url,
+                            'cookie_index' => $index + 1,
+                            'cookie_path' => basename($cookiesPath),
+                        ]);
+                        return $result;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Instagram download with cookie failed, trying next', [
+                        'url' => $url,
+                        'cookie_index' => $index + 1,
+                        'cookie_path' => basename($cookiesPath),
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Continue to next cookie
+                    continue;
                 }
-            } catch (\Exception $e) {
-                Log::warning('Instagram download with cookies failed, trying fallback', [
-                    'url' => $url,
-                    'error' => $e->getMessage(),
-                    'cookies_path' => $cookiesPath,
-                    'cookies_file_exists' => file_exists($cookiesPath),
-                    'cookies_file_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
-                ]);
             }
-        } else {
-            Log::warning('Instagram cookies file not available or invalid', [
-                'cookies_path' => $cookiesPath,
-                'file_exists' => $cookiesPath && file_exists($cookiesPath),
-                'file_size' => ($cookiesPath && file_exists($cookiesPath)) ? filesize($cookiesPath) : 0,
+        }
+        
+        if (empty($cookiesPaths)) {
+            Log::warning('Instagram cookies files not available', [
+                'url' => $url,
             ]);
         }
 

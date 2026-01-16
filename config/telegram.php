@@ -58,6 +58,9 @@ return [
     
     'instagram_cookies_path' => env('INSTAGRAM_COOKIES_PATH', null),
     
+    // Multiple cookies support (comma-separated paths for rotation)
+    'instagram_cookies_paths' => env('INSTAGRAM_COOKIES_PATHS', null), // Format: "path1,path2,path3"
+    
     /*
     |--------------------------------------------------------------------------
     | Required Channel Subscription
