@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Test URL from command line argument or use default
-TEST_URL="${1:-https://www.instagram.com/p/DThRA3DDLSd/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==}"
+TEST_URL="${1:-https://www.instagram.com/reel/DTi45EajDUi/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==}"
 
-echo "🧪 Instagram Rasm Yuklash Test"
+echo "🧪 Instagram Media Yuklash Test"
 echo "=============================="
 echo ""
 
@@ -77,9 +77,9 @@ else
 fi
 echo ""
 
-# 5. Rasm yuklash testi (cookies bilan, 'best' format)
+# 5. Media yuklash testi (cookies bilan, 'best' format)
 if [ -n "$COOKIES_PATH" ]; then
-    echo "5️⃣ Rasm yuklash testi (cookies bilan, 'best' format)..."
+    echo "5️⃣ Media yuklash testi (cookies bilan, 'best' format)..."
     echo "   Command: $YT_DLP_PATH --no-playlist --no-warnings --quiet --cookies \"$COOKIES_PATH\" --format 'best' --output \"$TEST_DIR/%(title)s.%(ext)s\" \"$TEST_URL\""
     echo ""
     
@@ -93,7 +93,7 @@ if [ -n "$COOKIES_PATH" ]; then
     
     if [ $EXIT_CODE -eq 0 ]; then
         # Check if files were downloaded
-        FILES=$(find "$TEST_DIR" -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.webp" -o -name "*.mp4" -o -name "*.webm" \) 2>/dev/null)
+        FILES=$(find "$TEST_DIR" -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.webp" -o -name "*.mp4" -o -name "*.webm" -o -name "*.mkv" -o -name "*.mov" \) 2>/dev/null)
         
         if [ -n "$FILES" ]; then
             FILE_COUNT=$(echo "$FILES" | wc -l)
@@ -104,7 +104,7 @@ if [ -n "$COOKIES_PATH" ]; then
                 TYPE=""
                 if [[ "$EXT" =~ ^(jpg|jpeg|png|webp)$ ]]; then
                     TYPE="📸 RASM"
-                elif [[ "$EXT" =~ ^(mp4|webm)$ ]]; then
+                elif [[ "$EXT" =~ ^(mp4|webm|mkv|mov)$ ]]; then
                     TYPE="🎥 VIDEO"
                 fi
                 echo "   $TYPE $(basename "$file") ($SIZE)"
