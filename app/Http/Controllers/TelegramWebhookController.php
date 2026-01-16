@@ -33,11 +33,32 @@ class TelegramWebhookController extends Controller
     {
         try {
             $update = $request->all();
+            $updateId = $update['update_id'] ?? null;
 
             // Log incoming update (without sensitive data)
             Log::info('Telegram webhook received', [
-                'update_id' => $update['update_id'] ?? null,
+                'update_id' => $updateId,
             ]);
+
+            // Prevent duplicate webhook processing using update_id
+            // Telegram guarantees that update_id is unique and monotonically increasing
+            if ($updateId !== null) {
+                $cacheKey = "telegram_update_{$updateId}";
+                
+                // Check if this update has already been processed
+                if (\Illuminate\Support\Facades\Cache::has($cacheKey)) {
+                    Log::warning('Duplicate webhook update detected, skipping', [
+                        'update_id' => $updateId,
+                    ]);
+                    
+                    // Still return 200 OK to prevent Telegram from retrying
+                    return response()->json(['ok' => true]);
+                }
+                
+                // Mark this update as processed (cache for 24 hours)
+                // Update IDs are unique, so we can safely cache them
+                \Illuminate\Support\Facades\Cache::put($cacheKey, true, now()->addHours(24));
+            }
 
             // Handle callback_query (inline button clicks)
             if (isset($update['callback_query'])) {
@@ -165,16 +186,18 @@ class TelegramWebhookController extends Controller
             'text' => $text ? substr($text, 0, 50) : null,
         ]);
 
-        // Handle /start command
-        if ($text === '/start') {
+        // Handle /start command (check for /start with or without bot username)
+        // Also check if text starts with /start to catch variations like /start@botname
+        if ($text && (str_starts_with($text, '/start') && (strlen($text) === 6 || $text[6] === ' ' || $text[6] === '@'))) {
             // Send language selection keyboard DIRECTLY (synchronous) for immediate response
             // Using queue causes delays and reliability issues
             try {
                 Log::info('Sending language selection directly', [
                     'chat_id' => $chatId,
+                    'text' => $text,
                 ]);
                 
-                $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
+                $langText = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
                 $keyboard = [
                     [
                         ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
@@ -187,7 +210,7 @@ class TelegramWebhookController extends Controller
                     ],
                 ];
                 
-                $messageId = $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
+                $messageId = $this->telegramService->sendMessageWithKeyboard($chatId, $langText, $keyboard);
                 
                 if ($messageId) {
                     Log::info('Language selection sent successfully', [
@@ -206,12 +229,12 @@ class TelegramWebhookController extends Controller
                     'trace' => $e->getTraceAsString(),
                 ]);
             }
-            return;
+            return; // CRITICAL: Return immediately to prevent URL processing
         }
 
 
-        // Handle URL
-        if ($text) {
+        // Handle URL (skip if text is empty or is a command)
+        if ($text && !str_starts_with($text, '/')) {
             // Get user's language preference
             $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
             
@@ -245,6 +268,24 @@ class TelegramWebhookController extends Controller
                 return;
             }
 
+            // Prevent duplicate job dispatch for the same message
+            // Use chat_id + message_id as unique identifier for the message
+            $jobCacheKey = "download_job_{$chatId}_{$messageId}_{$validatedUrl}";
+            
+            // Check if job for this message has already been dispatched
+            if (\Illuminate\Support\Facades\Cache::has($jobCacheKey)) {
+                Log::warning('Duplicate download job detected, skipping', [
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'url' => $validatedUrl,
+                ]);
+                return; // Skip duplicate job dispatch
+            }
+            
+            // Mark this job as dispatched (cache for 1 hour to prevent duplicates)
+            // This prevents the same URL from being processed multiple times for the same message
+            \Illuminate\Support\Facades\Cache::put($jobCacheKey, true, now()->addHour());
+
             // Send "Downloading..." message IMMEDIATELY (before dispatching job)
             // This gives instant feedback to user
             $downloadingMessages = [
@@ -269,8 +310,10 @@ class TelegramWebhookController extends Controller
 
             Log::info('Download job dispatched', [
                 'chat_id' => $chatId,
+                'message_id' => $messageId,
                 'url' => $validatedUrl,
                 'downloading_message_id' => $downloadingMessageId,
+                'job_cache_key' => $jobCacheKey,
             ]);
         }
     }
