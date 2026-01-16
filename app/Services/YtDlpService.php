@@ -570,45 +570,107 @@ class YtDlpService
     private function downloadInstagramImage(string $url, string $outputDir): array
     {
         $cookiesPath = config('telegram.instagram_cookies_path');
+        $allErrors = [];
         
         // Method 1: Try with cookies (most reliable)
         if ($cookiesPath && file_exists($cookiesPath)) {
             try {
                 $result = $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
                 if (!empty($result)) {
+                    Log::info('Instagram image downloaded successfully with cookies', [
+                        'url' => $url,
+                        'files_count' => count($result),
+                    ]);
                     return $result;
                 }
             } catch (\Exception $e) {
-                Log::warning('Instagram image download with cookies failed, trying fallback', [
+                $allErrors[] = 'Cookies method: ' . $e->getMessage();
+                Log::warning('Instagram image download with cookies failed', [
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
             }
         }
         
-        // Method 2: Try without cookies with enhanced headers
+        // Method 2: Try direct image URL extraction (most reliable for images)
         try {
-            $result = $this->downloadInstagramImageWithoutCookies($url, $outputDir);
+            $result = $this->downloadInstagramImageDirect($url, $outputDir);
             if (!empty($result)) {
+                Log::info('Instagram image downloaded successfully with direct method', [
+                    'url' => $url,
+                    'files_count' => count($result),
+                ]);
                 return $result;
             }
         } catch (\Exception $e) {
-            Log::warning('Instagram image download without cookies failed, trying alternative', [
+            $allErrors[] = 'Direct method: ' . $e->getMessage();
+            Log::warning('Instagram direct image download failed', [
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
         }
         
-        // Method 3: Try alternative format selector
+        // Method 3: Try without cookies with enhanced headers
         try {
-            return $this->downloadInstagramImageAlternative($url, $outputDir);
+            $result = $this->downloadInstagramImageWithoutCookies($url, $outputDir);
+            if (!empty($result)) {
+                Log::info('Instagram image downloaded successfully without cookies', [
+                    'url' => $url,
+                    'files_count' => count($result),
+                ]);
+                return $result;
+            }
         } catch (\Exception $e) {
-            Log::error('All Instagram image download methods failed', [
+            $allErrors[] = 'Enhanced headers method: ' . $e->getMessage();
+            Log::warning('Instagram image download without cookies failed', [
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
-            throw $e;
         }
+        
+        // Method 4: Try alternative format selector
+        try {
+            $result = $this->downloadInstagramImageAlternative($url, $outputDir);
+            if (!empty($result)) {
+                Log::info('Instagram image downloaded successfully with alternative format', [
+                    'url' => $url,
+                    'files_count' => count($result),
+                ]);
+                return $result;
+            }
+        } catch (\Exception $e) {
+            $allErrors[] = 'Alternative format method: ' . $e->getMessage();
+            Log::warning('Instagram alternative image download failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Method 5: Last resort - try with minimal arguments
+        try {
+            $result = $this->downloadInstagramImageMinimal($url, $outputDir);
+            if (!empty($result)) {
+                Log::info('Instagram image downloaded successfully with minimal method', [
+                    'url' => $url,
+                    'files_count' => count($result),
+                ]);
+                return $result;
+            }
+        } catch (\Exception $e) {
+            $allErrors[] = 'Minimal method: ' . $e->getMessage();
+            Log::warning('Instagram minimal image download failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // All methods failed
+        Log::error('All Instagram image download methods failed', [
+            'url' => $url,
+            'errors' => $allErrors,
+        ]);
+        
+        throw new \RuntimeException('Instagram rasm yuklab olinmadi. Barcha metodlar muvaffaqiyatsiz. Xatolar: ' . implode('; ', array_slice($allErrors, 0, 3)));
     }
     
     /**
@@ -648,6 +710,75 @@ class YtDlpService
      */
     private function downloadInstagramImageWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
+        // Try multiple format selectors for better compatibility
+        $formatSelectors = [
+            'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+            'best[height<=2160][ext=jpg]/best[height<=2160][ext=jpeg]/best[height<=2160][ext=png]/best[ext=jpg]/best',
+            'best',
+        ];
+        
+        $lastException = null;
+        
+        foreach ($formatSelectors as $format) {
+            try {
+                $arguments = [
+                    $this->ytDlpPath,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--quiet',
+                    '--no-progress',
+                    '--ignore-errors',
+                    '--cookies', $cookiesPath,
+                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    '--referer', 'https://www.instagram.com/',
+                    '--output', $outputDir . '/%(title)s.%(ext)s',
+                    '--format', $format,
+                    '--extractor-args', 'instagram:skip_auth=True',
+                    '--no-check-certificate',
+                    $url,
+                ];
+
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return image files (exclude videos)
+                $images = array_filter($downloadedFiles, function($file) {
+                    return $this->isImage($file);
+                });
+                
+                if (!empty($images)) {
+                    return array_values($images);
+                }
+            } catch (\Exception $e) {
+                $lastException = $e;
+                Log::debug('Instagram image download with cookies attempt failed', [
+                    'url' => $url,
+                    'format' => $format,
+                    'error' => $e->getMessage(),
+                ]);
+                continue;
+            }
+        }
+        
+        if ($lastException) {
+            throw $lastException;
+        }
+        
+        throw new \RuntimeException('No image files were downloaded with cookies');
+    }
+    
+    /**
+     * Direct Instagram image download method (most reliable for images)
+     * Uses --write-thumbnail and --skip-download to get image URLs, then downloads them
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImageDirect(string $url, string $outputDir): array
+    {
+        $cookiesPath = config('telegram.instagram_cookies_path');
+        
+        // Build arguments for direct image download
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -655,21 +786,113 @@ class YtDlpService
             '--quiet',
             '--no-progress',
             '--ignore-errors',
-            '--cookies', $cookiesPath,
+        ];
+        
+        // Add cookies if available
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            $arguments[] = '--cookies';
+            $arguments[] = $cookiesPath;
+        }
+        
+        $arguments = array_merge($arguments, [
             '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
             '--extractor-args', 'instagram:skip_auth=True',
+            '--no-check-certificate',
+            '--write-thumbnail',
+            '--convert-thumbnails', 'jpg',
+            $url,
+        ]);
+
+        try {
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter to only return image files (exclude videos and other files)
+            $images = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            
+            if (!empty($images)) {
+                return array_values($images);
+            }
+        } catch (\Exception $e) {
+            Log::debug('Direct Instagram image download failed, trying without thumbnail', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Fallback: try without thumbnail options
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+        ];
+        
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            $arguments[] = '--cookies';
+            $arguments[] = $cookiesPath;
+        }
+        
+        $arguments = array_merge($arguments, [
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            '--no-check-certificate',
+            $url,
+        ]);
+        
+        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+        
+        // Filter to only return image files
+        $images = array_filter($downloadedFiles, function($file) {
+            return $this->isImage($file);
+        });
+        
+        if (empty($images)) {
+            throw new \RuntimeException('No image files were downloaded with direct method');
+        }
+        
+        return array_values($images);
+    }
+    
+    /**
+     * Minimal Instagram image download method (last resort)
+     * Uses minimal arguments to avoid any potential issues
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImageMinimal(string $url, string $outputDir): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best',
             $url,
         ];
 
         $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
         
-        // Filter to only return image files (exclude videos)
-        return array_filter($downloadedFiles, function($file) {
+        // Filter to only return image files
+        $images = array_filter($downloadedFiles, function($file) {
             return $this->isImage($file);
         });
+        
+        if (empty($images)) {
+            throw new \RuntimeException('No image files were downloaded with minimal method');
+        }
+        
+        return array_values($images);
     }
     
     /**
