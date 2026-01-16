@@ -65,6 +65,20 @@ class DownloadMediaJob implements ShouldQueue
                 }
             });
             
+            // Add delay for Instagram to avoid rate limiting
+            // Only delay on retry attempts (not first attempt)
+            $isInstagram = str_contains($this->url, 'instagram.com');
+            if ($isInstagram && $this->attempts() > 1) {
+                $delaySeconds = min(5 * $this->attempts(), 15); // 5s, 10s, 15s max
+                Log::info('Adding delay for Instagram retry to avoid rate limiting', [
+                    'chat_id' => $this->chatId,
+                    'url' => $this->url,
+                    'attempt' => $this->attempts(),
+                    'delay_seconds' => $delaySeconds,
+                ]);
+                sleep($delaySeconds);
+            }
+            
             // Use downloading message ID passed from webhook (already sent immediately)
             // If not provided, send it here as fallback
             if ($this->downloadingMessageId === null) {
@@ -329,14 +343,34 @@ class DownloadMediaJob implements ShouldQueue
             $errorMessage = $e->getMessage();
             $isInstagram = str_contains($this->url, 'instagram.com');
             
-            Log::error('Media download job failed', [
+            // Enhanced logging for Instagram errors
+            $logContext = [
                 'chat_id' => $this->chatId,
                 'url' => $this->url,
                 'error' => $errorMessage,
+                'error_class' => get_class($e),
                 'attempt' => $this->attempts(),
+                'max_attempts' => $this->tries,
                 'is_instagram' => $isInstagram,
-                'trace' => substr($e->getTraceAsString(), 0, 1000), // Limit trace size
-            ]);
+            ];
+            
+            // Add specific Instagram error detection
+            if ($isInstagram) {
+                $errorLower = strtolower($errorMessage);
+                if (str_contains($errorLower, 'rate limit') || str_contains($errorLower, 'too many requests')) {
+                    $logContext['error_type'] = 'rate_limit';
+                } elseif (str_contains($errorLower, 'login required') || str_contains($errorLower, 'private')) {
+                    $logContext['error_type'] = 'authentication_required';
+                } elseif (str_contains($errorLower, 'extractor')) {
+                    $logContext['error_type'] = 'extractor_error';
+                } elseif (str_contains($errorLower, 'no files') || str_contains($errorLower, 'not found')) {
+                    $logContext['error_type'] = 'content_unavailable';
+                } else {
+                    $logContext['error_type'] = 'unknown';
+                }
+            }
+            
+            Log::error('Media download job failed', $logContext);
 
             // Determine if this error should be retried
             $shouldRetry = $this->shouldRetryException($e);
@@ -517,7 +551,14 @@ class DownloadMediaJob implements ShouldQueue
         // Retry rate-limit errors (Instagram sometimes blocks temporarily)
         if (str_contains($exceptionMessage, 'rate-limit') ||
             str_contains($exceptionMessage, 'rate limit') ||
+            str_contains($exceptionMessage, 'too many requests') ||
             (str_contains($exceptionMessage, 'login required') && str_contains($exceptionMessage, 'instagram'))) {
+            return true;
+        }
+        
+        // Retry Instagram extractor errors (API might be temporarily unavailable)
+        if (str_contains($exceptionMessage, 'extractor') && 
+            str_contains($exceptionMessage, 'instagram')) {
             return true;
         }
         
@@ -547,7 +588,16 @@ class DownloadMediaJob implements ShouldQueue
      */
     public function backoff(): array
     {
-        // Exponential backoff: 5 seconds, then 15 seconds
+        // Exponential backoff with longer delays for Instagram
+        $isInstagram = str_contains($this->url, 'instagram.com');
+        
+        if ($isInstagram) {
+            // Longer delays for Instagram to avoid rate limiting
+            // 10 seconds, then 30 seconds
+            return [10, 30];
+        }
+        
+        // Standard backoff for other platforms: 5 seconds, then 15 seconds
         return [5, 15];
     }
 
