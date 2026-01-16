@@ -36,7 +36,8 @@ class DownloadMediaJob implements ShouldQueue
         public int|string $chatId,
         public string $url,
         public ?int $messageId = null,
-        public ?string $language = null
+        public ?string $language = null,
+        public ?int $downloadingMessageId = null
     ) {
         // If language not provided, try to get from cache
         if ($this->language === null) {
@@ -63,21 +64,24 @@ class DownloadMediaJob implements ShouldQueue
                     $this->cleanup($tempDir);
                 }
             });
-            // Get localized messages
-            $downloadingMessages = [
-                'uz' => "⏳ <b>Yuklanmoqda...</b>\n\nIltimos, kuting. Media fayli tayyorlanmoqda.",
-                'ru' => "⏳ <b>Загрузка...</b>\n\nПожалуйста, подождите. Медиа файл готовится.",
-                'en' => "⏳ <b>Downloading...</b>\n\nPlease wait. Media file is being prepared.",
-            ];
             
-            $downloadingMessage = $downloadingMessages[$this->language] ?? $downloadingMessages['en'];
-            
-            // Send "Downloading..." message at the start and save its message ID
-            $downloadingMessageId = $telegramService->sendMessage(
-                $this->chatId,
-                $downloadingMessage,
-                $this->messageId
-            );
+            // Use downloading message ID passed from webhook (already sent immediately)
+            // If not provided, send it here as fallback
+            if ($this->downloadingMessageId === null) {
+                $downloadingMessages = [
+                    'uz' => "⏳ <b>Yuklanmoqda...</b>\n\nIltimos, kuting. Media fayli tayyorlanmoqda.",
+                    'ru' => "⏳ <b>Загрузка...</b>\n\nПожалуйста, подождите. Медиа файл готовится.",
+                    'en' => "⏳ <b>Downloading...</b>\n\nPlease wait. Media file is being prepared.",
+                ];
+                
+                $downloadingMessage = $downloadingMessages[$this->language] ?? $downloadingMessages['en'];
+                
+                $this->downloadingMessageId = $telegramService->sendMessage(
+                    $this->chatId,
+                    $downloadingMessage,
+                    $this->messageId
+                );
+            }
 
             // Create unique temporary directory
             $tempDir = config('telegram.temp_storage_path') . '/' . Str::uuid();
@@ -210,14 +214,14 @@ class DownloadMediaJob implements ShouldQueue
             }
 
             // Delete "Downloading..." message after successfully sending media
-            if (isset($downloadingMessageId) && $downloadingMessageId !== null) {
+            if ($this->downloadingMessageId !== null) {
                 try {
-                    $telegramService->deleteMessage($this->chatId, $downloadingMessageId);
+                    $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
                 } catch (\Exception $e) {
                     // Log but don't fail the job if message deletion fails
                     Log::warning('Failed to delete downloading message', [
                         'chat_id' => $this->chatId,
-                        'message_id' => $downloadingMessageId,
+                        'message_id' => $this->downloadingMessageId,
                         'error' => $e->getMessage(),
                     ]);
                 }

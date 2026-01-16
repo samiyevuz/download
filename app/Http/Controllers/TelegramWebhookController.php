@@ -182,14 +182,32 @@ class TelegramWebhookController extends Controller
                 return;
             }
 
+            // Send "Downloading..." message IMMEDIATELY (before dispatching job)
+            // This gives instant feedback to user
+            $downloadingMessages = [
+                'uz' => "⏳ <b>Yuklanmoqda...</b>\n\nIltimos, kuting. Media fayli tayyorlanmoqda.",
+                'ru' => "⏳ <b>Загрузка...</b>\n\nПожалуйста, подождите. Медиа файл готовится.",
+                'en' => "⏳ <b>Downloading...</b>\n\nPlease wait. Media file is being prepared.",
+            ];
+            
+            $downloadingMessage = $downloadingMessages[$language] ?? $downloadingMessages['en'];
+            
+            // Send message immediately (synchronously) for instant feedback
+            $downloadingMessageId = $this->telegramService->sendMessage(
+                $chatId,
+                $downloadingMessage,
+                $messageId
+            );
+
             // Dispatch job to queue for async processing
-            // The job itself will send the "Downloading..." message
-            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, $language)
+            // Pass downloading message ID so job can delete it later
+            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, $language, $downloadingMessageId)
                 ->onQueue('downloads');
 
             Log::info('Download job dispatched', [
                 'chat_id' => $chatId,
                 'url' => $validatedUrl,
+                'downloading_message_id' => $downloadingMessageId,
             ]);
         }
     }

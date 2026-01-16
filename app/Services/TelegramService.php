@@ -34,7 +34,8 @@ class TelegramService
     public function sendMessage(int|string $chatId, string $text, ?int $replyToMessageId = null): ?int
     {
         try {
-            $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/sendMessage", [
+            // Reduced timeout from 10 to 5 seconds for faster response
+            $response = Http::timeout(5)->post("{$this->apiUrl}{$this->botToken}/sendMessage", [
                 'chat_id' => $chatId,
                 'text' => $text,
                 'parse_mode' => 'HTML',
@@ -404,6 +405,18 @@ class TelegramService
             return ['is_member' => true, 'missing_channels' => []];
         }
 
+        // Cache key for membership check (cache for 5 minutes to reduce API calls)
+        $cacheKey = "channel_membership_{$userId}_" . md5(implode(',', $channels));
+        $cachedResult = \Illuminate\Support\Facades\Cache::get($cacheKey);
+        
+        if ($cachedResult !== null) {
+            Log::debug('Using cached channel membership result', [
+                'user_id' => $userId,
+                'cached_result' => $cachedResult,
+            ]);
+            return $cachedResult;
+        }
+
         // Check all channels - user must be member of ALL channels
         foreach ($channels as $channel) {
             try {
@@ -499,10 +512,15 @@ class TelegramService
             }
         }
 
-        return [
+        $result = [
             'is_member' => empty($missingChannels),
             'missing_channels' => $missingChannels,
         ];
+
+        // Cache the result for 5 minutes to reduce API calls
+        \Illuminate\Support\Facades\Cache::put($cacheKey, $result, 300); // 5 minutes
+
+        return $result;
     }
 
     /**
