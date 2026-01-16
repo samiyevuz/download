@@ -110,24 +110,10 @@ class DownloadMediaJob implements ShouldQueue
                 'url' => $this->url,
                 'temp_dir' => $tempDir,
                 'attempt' => $this->attempts(),
-                'language' => $this->language,
             ]);
 
             // Download media
-            Log::info('Calling ytDlpService->download', [
-                'chat_id' => $this->chatId,
-                'url' => $this->url,
-                'temp_dir' => $tempDir,
-            ]);
-            
             $downloadedFiles = $ytDlpService->download($this->url, $tempDir);
-            
-            Log::info('ytDlpService->download completed', [
-                'chat_id' => $this->chatId,
-                'url' => $this->url,
-                'downloaded_files_count' => count($downloadedFiles),
-                'downloaded_files' => array_map('basename', $downloadedFiles),
-            ]);
 
             if (empty($downloadedFiles)) {
                 throw new \RuntimeException('No files were downloaded');
@@ -183,36 +169,19 @@ class DownloadMediaJob implements ShouldQueue
                 }
             }
 
-            // Caption for all media
-            $caption = "📥 Downloaded successfully";
+            // Get localized caption
+            $captions = [
+                'uz' => "✅ <b>Muvaffaqiyatli yuklandi!</b>\n\n⚡ Tez va barqaror bot",
+                'ru' => "✅ <b>Успешно загружено!</b>\n\n⚡ Быстрый и стабильный бот",
+                'en' => "✅ <b>Downloaded successfully!</b>\n\n⚡ Fast & stable bot",
+            ];
+            
+            $caption = $captions[$this->language] ?? $captions['en'];
 
             // Send videos
-            if (!empty($videos)) {
-                Log::info('Sending videos to user', [
-                    'chat_id' => $this->chatId,
-                    'videos_count' => count($videos),
-                    'video_paths' => array_map('basename', $videos),
-                ]);
-            }
-            
             foreach ($videos as $videoPath) {
-                if (!file_exists($videoPath)) {
-                    Log::error('Video file does not exist', [
-                        'chat_id' => $this->chatId,
-                        'video_path' => $videoPath,
-                    ]);
-                    continue;
-                }
-                
                 $fileSize = filesize($videoPath);
                 $maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
-                
-                Log::info('Processing video file', [
-                    'chat_id' => $this->chatId,
-                    'video_path' => $videoPath,
-                    'file_size' => $fileSize,
-                    'file_size_mb' => round($fileSize / 1024 / 1024, 2),
-                ]);
                 
                 if ($fileSize > $maxFileSize) {
                     // Video is too large for Telegram
@@ -396,23 +365,6 @@ class DownloadMediaJob implements ShouldQueue
                 ]);
             }
 
-            // Delete "Downloading..." message after successful download
-            if ($this->downloadingMessageId !== null) {
-                try {
-                    $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
-                    Log::info('Downloading message deleted', [
-                        'chat_id' => $this->chatId,
-                        'downloading_message_id' => $this->downloadingMessageId,
-                    ]);
-                } catch (\Exception $deleteError) {
-                    Log::warning('Failed to delete downloading message', [
-                        'chat_id' => $this->chatId,
-                        'downloading_message_id' => $this->downloadingMessageId,
-                        'error' => $deleteError->getMessage(),
-                    ]);
-                }
-            }
-
             // If only videos were found, that's fine
             // If only images were found, that's fine
             // If neither, log warning
@@ -422,15 +374,6 @@ class DownloadMediaJob implements ShouldQueue
                     'url' => $this->url,
                     'files' => $downloadedFiles,
                 ]);
-                
-                // Send error message to user
-                $errorMessages = [
-                    'uz' => "❌ Media topilmadi yoki yuklab bo'lmadi.",
-                    'ru' => "❌ Медиа не найдено или не удалось загрузить.",
-                    'en' => "❌ Unable to download this content.",
-                ];
-                $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
-                $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
             }
 
             // Delete "Downloading..." message after successfully sending media
@@ -506,8 +449,22 @@ class DownloadMediaJob implements ShouldQueue
             // Send error message to user only if we're not retrying
             if (!$shouldRetry || $this->attempts() >= $this->tries) {
                 try {
-                    // Simple error message as per requirements
-                    $errorMessage = "❌ Unable to download this content.";
+                    // Get localized error message with more specific info for Instagram
+                    if ($isInstagram && str_contains(strtolower($errorMessage), 'rasm')) {
+                        $errorMessages = [
+                            'uz' => "❌ <b>Instagram rasm yuklab olinmadi</b>\n\n⚠️ Instagram API o'zgargan yoki kontent maxfiy bo'lishi mumkin.\n\n💡 Instagram cookies faylini qo'shish yordam berishi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                            'ru' => "❌ <b>Не удалось загрузить изображение Instagram</b>\n\n⚠️ API Instagram мог измениться или контент может быть приватным.\n\n💡 Добавление файла cookies Instagram может помочь.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                            'en' => "❌ <b>Instagram image download failed</b>\n\n⚠️ Instagram API may have changed or content may be private.\n\n💡 Adding Instagram cookies file may help.\n\n🔗 Please try another link.",
+                        ];
+                    } else {
+                        $errorMessages = [
+                            'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                            'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                            'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
+                        ];
+                    }
+                    
+                    $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
                     
                     $telegramService->sendMessage(
                         $this->chatId,
@@ -542,7 +499,6 @@ class DownloadMediaJob implements ShouldQueue
     /**
      * Clean up temporary files and directory
      * Guaranteed to execute even on errors
-     * Also cleans up converted JPG files from WebP conversion
      *
      * @param string|null $directory
      * @return void
@@ -725,8 +681,6 @@ class DownloadMediaJob implements ShouldQueue
             'chat_id' => $this->chatId,
             'url' => $this->url,
             'error' => $exception->getMessage(),
-            'error_class' => get_class($exception),
-            'trace' => $exception->getTraceAsString(),
             'attempts' => $this->attempts(),
         ]);
 
