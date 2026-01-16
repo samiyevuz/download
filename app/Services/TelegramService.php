@@ -456,20 +456,23 @@ class TelegramService
                 $status = $responseData['result']['status'] ?? null;
                 $user = $responseData['result']['user'] ?? null;
 
-                Log::debug('Channel membership check result', [
+                Log::info('Channel membership check result', [
                     'user_id' => $userId,
                     'channel' => $channel,
                     'status' => $status,
-                    'user' => $user,
+                    'user' => $user ? ['id' => $user['id'] ?? null, 'username' => $user['username'] ?? null] : null,
                 ]);
 
                 // User is member if status is 'member', 'administrator', or 'creator'
                 // Also check for 'restricted' status (user is restricted but still a member)
-                if (!in_array($status, ['member', 'administrator', 'creator', 'restricted'])) {
-                    Log::info('User is not a member of channel', [
+                $validStatuses = ['member', 'administrator', 'creator', 'restricted'];
+                
+                if (!in_array($status, $validStatuses)) {
+                    Log::warning('User is not a member of channel', [
                         'user_id' => $userId,
                         'channel' => $channel,
                         'status' => $status,
+                        'valid_statuses' => $validStatuses,
                     ]);
                     return false;
                 }

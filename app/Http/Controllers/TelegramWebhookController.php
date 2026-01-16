@@ -134,12 +134,7 @@ class TelegramWebhookController extends Controller
 
         // Handle /start command
         if ($text === '/start') {
-            // Check subscription first
-            if (!$this->checkSubscription($userId, $language)) {
-                return;
-            }
-
-            // Send language selection keyboard
+            // Send language selection keyboard FIRST (before subscription check)
             try {
                 \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
             } catch (\Exception $e) {
