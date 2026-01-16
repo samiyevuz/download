@@ -104,9 +104,9 @@ class TelegramWebhookController extends Controller
                 $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
                 
                 $errorMessages = [
-                    'uz' => "❌ Iltimos, to'g'ri Instagram yoki TikTok linkini yuboring.",
-                    'ru' => "❌ Пожалуйста, отправьте действительную ссылку Instagram или TikTok.",
-                    'en' => "❌ Please send a valid Instagram or TikTok link.",
+                    'uz' => "❌ <b>Noto'g'ri link</b>\n\n⚠️ Iltimos, to'g'ri Instagram yoki TikTok linkini yuboring.\n\n📝 Misol: <code>https://www.instagram.com/reel/...</code>",
+                    'ru' => "❌ <b>Неверная ссылка</b>\n\n⚠️ Пожалуйста, отправьте действительную ссылку Instagram или TikTok.\n\n📝 Пример: <code>https://www.instagram.com/reel/...</code>",
+                    'en' => "❌ <b>Invalid link</b>\n\n⚠️ Please send a valid Instagram or TikTok link.\n\n📝 Example: <code>https://www.instagram.com/reel/...</code>",
                 ];
                 
                 $errorMessage = $errorMessages[$language] ?? $errorMessages['en'];
@@ -179,6 +179,20 @@ class TelegramWebhookController extends Controller
                     'callback_query_id' => $callbackQueryId,
                     'error' => $e->getMessage(),
                 ]);
+            }
+
+            // Delete language selection message (clean up)
+            if ($message && isset($message['message_id'])) {
+                try {
+                    $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                } catch (\Exception $e) {
+                    // Log but don't fail if deletion fails
+                    Log::warning('Failed to delete language selection message', [
+                        'chat_id' => $chatId,
+                        'message_id' => $message['message_id'],
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             // Send welcome message in selected language

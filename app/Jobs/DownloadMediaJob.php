@@ -65,9 +65,9 @@ class DownloadMediaJob implements ShouldQueue
             });
             // Get localized messages
             $downloadingMessages = [
-                'uz' => "⏳ Yuklanmoqda, iltimos kuting...",
-                'ru' => "⏳ Загрузка, пожалуйста подождите...",
-                'en' => "⏳ Downloading, please wait...",
+                'uz' => "⏳ <b>Yuklanmoqda...</b>\n\nIltimos, kuting. Media fayli tayyorlanmoqda.",
+                'ru' => "⏳ <b>Загрузка...</b>\n\nПожалуйста, подождите. Медиа файл готовится.",
+                'en' => "⏳ <b>Downloading...</b>\n\nPlease wait. Media file is being prepared.",
             ];
             
             $downloadingMessage = $downloadingMessages[$this->language] ?? $downloadingMessages['en'];
@@ -114,9 +114,9 @@ class DownloadMediaJob implements ShouldQueue
 
             // Get localized caption
             $captions = [
-                'uz' => "📥 Muvaffaqiyatli yuklandi\n⚡ Tez va Barqaror Bot",
-                'ru' => "📥 Успешно загружено\n⚡ Быстрый и Стабильный Бот",
-                'en' => "📥 Downloaded successfully\n⚡ Fast & Stable Bot",
+                'uz' => "✅ <b>Muvaffaqiyatli yuklandi!</b>\n\n⚡ Tez va barqaror bot",
+                'ru' => "✅ <b>Успешно загружено!</b>\n\n⚡ Быстрый и стабильный бот",
+                'en' => "✅ <b>Downloaded successfully!</b>\n\n⚡ Fast & stable bot",
             ];
             
             $caption = $captions[$this->language] ?? $captions['en'];
@@ -225,9 +225,9 @@ class DownloadMediaJob implements ShouldQueue
                 try {
                     // Get localized error message
                     $errorMessages = [
-                        'uz' => "❌ Yuklab olish muvaffaqiyatsiz. Kontent maxfiy yoki mavjud emas.",
-                        'ru' => "❌ Загрузка не удалась. Контент может быть приватным или недоступным.",
-                        'en' => "❌ Download failed. The content may be private or unavailable.",
+                        'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                        'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                        'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
                     ];
                     
                     $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
@@ -425,9 +425,9 @@ class DownloadMediaJob implements ShouldQueue
             $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$this->chatId}", 'en');
             
             $errorMessages = [
-                'uz' => "❌ Yuklab olish muvaffaqiyatsiz. Kontent maxfiy yoki mavjud emas.",
-                'ru' => "❌ Загрузка не удалась. Контент может быть приватным или недоступным.",
-                'en' => "❌ Download failed. The content may be private or unavailable.",
+                'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
             ];
             
             $errorMessage = $errorMessages[$language] ?? $errorMessages['en'];

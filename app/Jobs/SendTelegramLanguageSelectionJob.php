@@ -29,12 +29,15 @@ class SendTelegramLanguageSelectionJob implements ShouldQueue
     public function handle(TelegramService $telegramService): void
     {
         try {
-            $text = "🌍 Please select your language / Выберите язык / Tilni tanlang:";
+            $text = "🌍 <b>Выберите язык / Select Language / Tilni tanlang</b>\n\n👇 Iltimos, tilni tanlang:";
             
+            // Professional layout: each button on its own row (full width)
             $keyboard = [
                 [
-                    ['text' => '🇺🇿 O\'zbek', 'callback_data' => 'lang_uz'],
-                    ['text' => '🇷🇺 Русский', 'callback_data' => 'lang_ru'],
+                    ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
+                ],
+                [
+                    ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
                 ],
                 [
                     ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
