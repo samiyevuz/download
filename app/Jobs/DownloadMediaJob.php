@@ -333,6 +333,13 @@ class DownloadMediaJob implements ShouldQueue
             return true;
         }
 
+        // Retry rate-limit errors (Instagram sometimes blocks temporarily)
+        if (str_contains($exceptionMessage, 'rate-limit') ||
+            str_contains($exceptionMessage, 'rate limit') ||
+            (str_contains($exceptionMessage, 'login required') && str_contains($exceptionMessage, 'instagram'))) {
+            return true;
+        }
+
         // Don't retry validation errors, invalid URLs, or content errors
         if (str_contains($exceptionMessage, 'invalid') ||
             str_contains($exceptionMessage, 'private') ||

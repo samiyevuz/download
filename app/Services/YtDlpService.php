@@ -63,6 +63,8 @@ class YtDlpService
                 '--ignore-errors',
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--referer', 'https://www.instagram.com/',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
                 '--format', 'best',
                 $url, // URL is already validated and sanitized
@@ -287,6 +289,8 @@ class YtDlpService
                 '--ignore-errors',
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--referer', 'https://www.instagram.com/',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
                 '--format', 'best',
                 $url, // URL is already validated and sanitized
