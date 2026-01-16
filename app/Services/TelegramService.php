@@ -411,12 +411,25 @@ class TelegramService
                 ]);
 
                 if (!$response->successful()) {
+                    $errorBody = $response->body();
                     Log::warning('Failed to check channel membership', [
                         'user_id' => $userId,
                         'channel' => $channel,
+                        'chat_id' => $chatId,
                         'status' => $response->status(),
-                        'body' => $response->body(),
+                        'body' => $errorBody,
                     ]);
+                    
+                    // Check if bot is not admin or channel doesn't exist
+                    if (str_contains($errorBody, 'bot is not a member') || 
+                        str_contains($errorBody, 'chat not found') ||
+                        str_contains($errorBody, 'not enough rights')) {
+                        Log::error('Bot cannot check channel membership - bot must be admin of the channel', [
+                            'channel' => $channel,
+                            'error' => $errorBody,
+                        ]);
+                    }
+                    
                     return false;
                 }
 
