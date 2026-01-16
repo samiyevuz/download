@@ -2871,12 +2871,39 @@ class YtDlpService
                 throw new \RuntimeException('No image URLs found in HTML');
             }
             
-            // Download images from extracted URLs - prioritize scontent URLs (actual images)
-            // Sort URLs to prioritize scontent-* URLs first (these are actual post images)
+            // Download images from extracted URLs - prioritize largest size (minimal crop)
+            // Sort URLs by size parameters to get highest quality (95%+ of original image)
             usort($imageUrls, function($a, $b) {
-                $aScore = (str_contains($a, 'scontent-') ? 10 : 0) + (str_contains($a, '/scontent/') ? 5 : 0);
-                $bScore = (str_contains($b, 'scontent-') ? 10 : 0) + (str_contains($b, '/scontent/') ? 5 : 0);
-                return $bScore <=> $aScore; // Descending order
+                // Score based on domain (scontent- is better)
+                $aDomainScore = (str_contains($a, 'scontent-') ? 10 : 0) + (str_contains($a, '/scontent/') ? 5 : 0);
+                $bDomainScore = (str_contains($b, 'scontent-') ? 10 : 0) + (str_contains($b, '/scontent/') ? 5 : 0);
+                
+                // Extract size parameters from URL (e.g., s1080x1080, s640x640, s320x320)
+                $aSize = 0;
+                $bSize = 0;
+                
+                // Try to find size parameter in URL
+                if (preg_match('/[?&](s(\d+)x(\d+))/i', $a, $aMatches)) {
+                    $aSize = (int)$aMatches[2] * (int)$aMatches[3]; // width * height
+                }
+                if (preg_match('/[?&](s(\d+)x(\d+))/i', $b, $bMatches)) {
+                    $bSize = (int)$bMatches[2] * (int)$bMatches[3]; // width * height
+                }
+                
+                // If size parameters found, prioritize by size (larger = better, less crop)
+                // If no size parameters, check if stp= (crop parameter) exists - prefer without stp
+                $aCropPenalty = (str_contains($a, 'stp=') ? -5 : 0);
+                $bCropPenalty = (str_contains($b, 'stp=') ? -5 : 0);
+                
+                // If sizes are equal, prefer domain
+                if ($aSize === $bSize) {
+                    $aTotalScore = $aDomainScore + $aCropPenalty;
+                    $bTotalScore = $bDomainScore + $bCropPenalty;
+                    return $bTotalScore <=> $aTotalScore; // Descending order
+                }
+                
+                // Prioritize by size (larger size = less crop = better)
+                return $bSize <=> $aSize; // Descending order (larger first)
             });
             
             $downloadedFiles = [];
