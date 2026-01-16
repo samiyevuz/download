@@ -177,6 +177,9 @@ class TelegramWebhookController extends Controller
 
         // Handle URL
         if ($text) {
+            // Get user's language preference
+            $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+            
             // Check subscription only for private chats (not for groups/supergroups)
             // In groups, subscription check is not required
             if (!$this->checkSubscription($userId, $language, $chatType)) {

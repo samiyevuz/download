@@ -110,10 +110,24 @@ class DownloadMediaJob implements ShouldQueue
                 'url' => $this->url,
                 'temp_dir' => $tempDir,
                 'attempt' => $this->attempts(),
+                'language' => $this->language,
             ]);
 
             // Download media
+            Log::info('Calling ytDlpService->download', [
+                'chat_id' => $this->chatId,
+                'url' => $this->url,
+                'temp_dir' => $tempDir,
+            ]);
+            
             $downloadedFiles = $ytDlpService->download($this->url, $tempDir);
+            
+            Log::info('ytDlpService->download completed', [
+                'chat_id' => $this->chatId,
+                'url' => $this->url,
+                'downloaded_files_count' => count($downloadedFiles),
+                'downloaded_files' => array_map('basename', $downloadedFiles),
+            ]);
 
             if (empty($downloadedFiles)) {
                 throw new \RuntimeException('No files were downloaded');
@@ -275,6 +289,14 @@ class DownloadMediaJob implements ShouldQueue
                     'images_count' => count($images),
                     'image_paths' => array_map('basename', $images),
                 ]);
+            }
+            
+            if (!empty($images)) {
+                Log::info('Sending images to user', [
+                    'chat_id' => $this->chatId,
+                    'images_count' => count($images),
+                    'image_paths' => array_map('basename', $images),
+                ]);
                 
                 // If multiple images, send as media group (max 10)
                 if (count($images) > 1) {
@@ -365,15 +387,41 @@ class DownloadMediaJob implements ShouldQueue
                 ]);
             }
 
+            // Delete "Downloading..." message after successfully sending media
+            if ($this->downloadingMessageId !== null) {
+                try {
+                    $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
+                    Log::info('Downloading message deleted', [
+                        'chat_id' => $this->chatId,
+                        'downloading_message_id' => $this->downloadingMessageId,
+                    ]);
+                } catch (\Exception $deleteError) {
+                    Log::warning('Failed to delete downloading message', [
+                        'chat_id' => $this->chatId,
+                        'downloading_message_id' => $this->downloadingMessageId,
+                        'error' => $deleteError->getMessage(),
+                    ]);
+                }
+            }
+
             // If only videos were found, that's fine
             // If only images were found, that's fine
-            // If neither, log warning
+            // If neither, log warning and send error
             if (empty($videos) && empty($images)) {
                 Log::warning('Downloaded files but no videos or images found', [
                     'chat_id' => $this->chatId,
                     'url' => $this->url,
                     'files' => $downloadedFiles,
                 ]);
+                
+                // Send error message to user
+                $errorMessages = [
+                    'uz' => "❌ Media topilmadi yoki yuklab bo'lmadi.",
+                    'ru' => "❌ Медиа не найдено или не удалось загрузить.",
+                    'en' => "❌ Unable to download this content.",
+                ];
+                $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
             }
 
             // Delete "Downloading..." message after successfully sending media
