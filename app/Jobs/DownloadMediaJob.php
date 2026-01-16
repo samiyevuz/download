@@ -288,12 +288,16 @@ class DownloadMediaJob implements ShouldQueue
             }
 
         } catch (\Exception $e) {
+            $errorMessage = $e->getMessage();
+            $isInstagram = str_contains($this->url, 'instagram.com');
+            
             Log::error('Media download job failed', [
                 'chat_id' => $this->chatId,
                 'url' => $this->url,
-                'error' => $e->getMessage(),
+                'error' => $errorMessage,
                 'attempt' => $this->attempts(),
-                'trace' => $e->getTraceAsString(),
+                'is_instagram' => $isInstagram,
+                'trace' => substr($e->getTraceAsString(), 0, 1000), // Limit trace size
             ]);
 
             // Determine if this error should be retried
@@ -302,12 +306,20 @@ class DownloadMediaJob implements ShouldQueue
             // Send error message to user only if we're not retrying
             if (!$shouldRetry || $this->attempts() >= $this->tries) {
                 try {
-                    // Get localized error message
-                    $errorMessages = [
-                        'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
-                        'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
-                        'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
-                    ];
+                    // Get localized error message with more specific info for Instagram
+                    if ($isInstagram && str_contains(strtolower($errorMessage), 'rasm')) {
+                        $errorMessages = [
+                            'uz' => "❌ <b>Instagram rasm yuklab olinmadi</b>\n\n⚠️ Instagram API o'zgargan yoki kontent maxfiy bo'lishi mumkin.\n\n💡 Instagram cookies faylini qo'shish yordam berishi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                            'ru' => "❌ <b>Не удалось загрузить изображение Instagram</b>\n\n⚠️ API Instagram мог измениться или контент может быть приватным.\n\n💡 Добавление файла cookies Instagram может помочь.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                            'en' => "❌ <b>Instagram image download failed</b>\n\n⚠️ Instagram API may have changed or content may be private.\n\n💡 Adding Instagram cookies file may help.\n\n🔗 Please try another link.",
+                        ];
+                    } else {
+                        $errorMessages = [
+                            'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
+                            'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
+                            'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
+                        ];
+                    }
                     
                     $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
                     
@@ -316,6 +328,15 @@ class DownloadMediaJob implements ShouldQueue
                         $errorMessage,
                         $this->messageId
                     );
+                    
+                    // Delete "Downloading..." message if exists
+                    if ($this->downloadingMessageId !== null) {
+                        try {
+                            $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
+                        } catch (\Exception $deleteError) {
+                            // Ignore delete errors
+                        }
+                    }
                 } catch (\Exception $sendError) {
                     Log::error('Failed to send error message', [
                         'chat_id' => $this->chatId,

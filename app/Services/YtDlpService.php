@@ -542,8 +542,49 @@ class YtDlpService
             }
         }
 
-        // Method 2: Fallback to enhanced headers
-        return $this->downloadWithEnhancedHeaders($url, $outputDir);
+        // Method 2: Try with enhanced headers
+        try {
+            return $this->downloadWithEnhancedHeaders($url, $outputDir);
+        } catch (\Exception $e) {
+            Log::warning('Instagram download with enhanced headers failed, trying alternative method', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Method 3: Try with alternative format selector for images
+            return $this->downloadInstagramAlternative($url, $outputDir);
+        }
+    }
+    
+    /**
+     * Alternative Instagram download method (for images)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramAlternative(string $url, string $outputDir): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept-Encoding:gzip, deflate, br',
+            '--add-header', 'X-Requested-With:XMLHttpRequest',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=png]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            $url,
+        ];
+
+        return $this->executeDownload($arguments, $url, $outputDir);
     }
 
     /**
@@ -608,7 +649,8 @@ class YtDlpService
             '--add-header', 'Connection:keep-alive',
             '--add-header', 'Upgrade-Insecure-Requests:1',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best/bestvideo+bestaudio/best',
+            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=png]/best[ext=jpeg]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
 
@@ -720,18 +762,27 @@ class YtDlpService
                             'extension' => $file->getExtension(),
                             'size' => $file->getSize(),
                             'path' => $file->getPathname(),
+                            'mime_type' => mime_content_type($file->getPathname()),
                         ];
                     }
                 }
             }
             
+            // Check if this is Instagram and provide more specific error
+            $isInstagram = str_contains($url, 'instagram.com');
+            $errorMessage = $isInstagram 
+                ? 'Instagram rasm yuklab olinmadi. Kontent maxfiy bo\'lishi yoki Instagram API o\'zgargan bo\'lishi mumkin.'
+                : 'No files were downloaded';
+            
             Log::error('No files were downloaded', [
                 'url' => $url,
                 'output_dir' => $outputDir,
                 'directory_contents' => $dirContents,
+                'is_instagram' => $isInstagram,
+                'error_message' => $errorMessage,
             ]);
             
-            throw new \RuntimeException('No files were downloaded');
+            throw new \RuntimeException($errorMessage);
         }
 
         Log::info('Download completed', [
