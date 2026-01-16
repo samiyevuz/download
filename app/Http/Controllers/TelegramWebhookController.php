@@ -69,9 +69,10 @@ class TelegramWebhookController extends Controller
      * @param int|string $userId
      * @param string $language
      * @param string|null $chatType Chat type (private, group, supergroup)
+     * @param int|string|null $chatId Optional chat ID for sending messages (defaults to userId for private chats)
      * @return bool
      */
-    private function checkSubscription(int|string $userId, string $language = 'en', ?string $chatType = null): bool
+    private function checkSubscription(int|string $userId, string $language = 'en', ?string $chatType = null, int|string|null $chatId = null): bool
     {
         // Skip subscription check for groups and supergroups
         // Subscription is only required for private chats
@@ -117,13 +118,17 @@ class TelegramWebhookController extends Controller
         ]);
 
         if (!$isMember) {
+            // Use chatId if provided, otherwise use userId (for private chats)
+            $targetChatId = $chatId ?? $userId;
+            
             // Send subscription required message with missing channels info
             Log::info('User not subscribed, sending subscription required message', [
                 'user_id' => $userId,
+                'chat_id' => $targetChatId,
                 'language' => $language,
                 'missing_channels' => $missingChannels,
             ]);
-            $this->telegramService->sendSubscriptionRequiredMessage($userId, $language, $missingChannels);
+            $this->telegramService->sendSubscriptionRequiredMessage($targetChatId, $language, $missingChannels);
             return false;
         }
 
@@ -442,10 +447,26 @@ class TelegramWebhookController extends Controller
 
             // Check subscription after language selection (only for private chats)
             // In groups, subscription check is not required
-            if (!$this->checkSubscription($userId, $language, $chatType)) {
+            Log::info('Checking subscription after language selection', [
+                'user_id' => $userId,
+                'chat_id' => $chatId,
+                'language' => $language,
+                'chat_type' => $chatType,
+            ]);
+            
+            if (!$this->checkSubscription($userId, $language, $chatType, $chatId)) {
                 // Subscription required message will be sent by checkSubscription
+                Log::info('Subscription check failed, waiting for user to subscribe', [
+                    'user_id' => $userId,
+                    'chat_id' => $chatId,
+                ]);
                 return;
             }
+            
+            Log::info('Subscription check passed after language selection', [
+                'user_id' => $userId,
+                'chat_id' => $chatId,
+            ]);
 
             // If subscribed (or in group), send welcome message
             // IMPORTANT: Use chatId (which is now correctly set to group chat ID if in group)
