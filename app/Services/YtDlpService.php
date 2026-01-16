@@ -710,116 +710,137 @@ class YtDlpService
      */
     private function downloadInstagramImageWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
-        // Try multiple format selectors for better compatibility
-        // For Instagram images, we need to use format selectors that work with image posts
-        $formatSelectors = [
-            'best',  // Let yt-dlp choose the best format (works for images)
-            'worst', // Sometimes works when best doesn't
-            'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-        ];
-        
-        $lastException = null;
-        
-        foreach ($formatSelectors as $format) {
-            try {
-                $arguments = [
-                    $this->ytDlpPath,
-                    '--no-playlist',
-                    '--no-warnings',
-                    '--quiet',
-                    '--no-progress',
-                    '--ignore-errors',
-                    '--cookies', $cookiesPath,
-                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                    '--referer', 'https://www.instagram.com/',
-                    '--output', $outputDir . '/%(title)s.%(ext)s',
-                    '--format', $format,
-                    '--extractor-args', 'instagram:skip_auth=True',
-                    '--no-check-certificate',
-                    $url,
-                ];
+        // Method 1: Try with --write-thumbnail and --skip-download to get image URL
+        // This is the most reliable method for Instagram images
+        try {
+            $arguments = [
+                $this->ytDlpPath,
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                '--no-progress',
+                '--ignore-errors',
+                '--cookies', $cookiesPath,
+                '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                '--referer', 'https://www.instagram.com/',
+                '--output', $outputDir . '/%(title)s.%(ext)s',
+                '--write-thumbnail',
+                '--skip-download',
+                $url,
+            ];
 
-                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            $process = new Process($arguments);
+            $process->setTimeout(30);
+            $process->setIdleTimeout(30);
+            $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
+
+            try {
+                $process->run();
                 
-                // Filter to only return image files (exclude videos)
-                $images = array_filter($downloadedFiles, function($file) {
-                    return $this->isImage($file);
-                });
-                
-                if (!empty($images)) {
-                    Log::info('Instagram image downloaded successfully with cookies', [
-                        'url' => $url,
-                        'format' => $format,
-                        'files_count' => count($images),
-                    ]);
-                    return array_values($images);
+                if ($process->isSuccessful()) {
+                    // Find thumbnail files
+                    $thumbnails = $this->findDownloadedFiles($outputDir, ['jpg', 'jpeg', 'png', 'webp']);
+                    if (!empty($thumbnails)) {
+                        Log::info('Instagram image downloaded via thumbnail method', [
+                            'url' => $url,
+                            'files_count' => count($thumbnails),
+                        ]);
+                        return array_values($thumbnails);
+                    }
                 }
             } catch (\Exception $e) {
-                $lastException = $e;
-                $errorMsg = strtolower($e->getMessage());
-                
-                // If "No video formats" error, this is expected for image posts, try next format
-                if (str_contains($errorMsg, 'no video formats')) {
-                    Log::debug('Instagram image post - no video formats (expected), trying next format', [
-                        'url' => $url,
-                        'format' => $format,
-                    ]);
-                    continue;
-                }
-                
-                Log::debug('Instagram image download with cookies attempt failed', [
+                Log::debug('Thumbnail method failed, trying direct download', [
                     'url' => $url,
-                    'format' => $format,
                     'error' => $e->getMessage(),
                 ]);
-                continue;
             }
-        }
-        
-        // If all format selectors failed with "No video formats", try without format selector
-        if ($lastException && str_contains(strtolower($lastException->getMessage()), 'no video formats')) {
-            Log::info('All format selectors failed with "No video formats", trying without format selector', [
+        } catch (\Exception $e) {
+            Log::debug('Thumbnail method setup failed', [
                 'url' => $url,
+                'error' => $e->getMessage(),
             ]);
-            
-            try {
-                $arguments = [
-                    $this->ytDlpPath,
-                    '--no-playlist',
-                    '--no-warnings',
-                    '--quiet',
-                    '--no-progress',
-                    '--ignore-errors',
-                    '--cookies', $cookiesPath,
-                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                    '--referer', 'https://www.instagram.com/',
-                    '--output', $outputDir . '/%(title)s.%(ext)s',
-                    '--extractor-args', 'instagram:skip_auth=True',
-                    '--no-check-certificate',
-                    $url,
-                ];
-
-                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
-                
-                // Filter to only return image files
-                $images = array_filter($downloadedFiles, function($file) {
-                    return $this->isImage($file);
-                });
-                
-                if (!empty($images)) {
-                    Log::info('Instagram image downloaded successfully without format selector', [
-                        'url' => $url,
-                        'files_count' => count($images),
-                    ]);
-                    return array_values($images);
-                }
-            } catch (\Exception $e) {
-                $lastException = $e;
-            }
         }
-        
-        if ($lastException) {
-            throw $lastException;
+
+        // Method 2: Try direct download without format selector (let yt-dlp decide)
+        // This is the most reliable for Instagram image posts
+        try {
+            $arguments = [
+                $this->ytDlpPath,
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                '--no-progress',
+                '--ignore-errors',
+                '--cookies', $cookiesPath,
+                '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                '--referer', 'https://www.instagram.com/',
+                '--output', $outputDir . '/%(title)s.%(ext)s',
+                // No format selector - let yt-dlp choose automatically
+                $url,
+            ];
+
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter to only return image files (exclude videos)
+            $images = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            
+            if (!empty($images)) {
+                Log::info('Instagram image downloaded successfully with cookies (no format selector)', [
+                    'url' => $url,
+                    'files_count' => count($images),
+                ]);
+                return array_values($images);
+            }
+        } catch (\Exception $e) {
+            $errorMsg = strtolower($e->getMessage());
+            
+            // If "No video formats" error, try with explicit image format
+            if (str_contains($errorMsg, 'no video formats')) {
+                Log::debug('No video formats error, trying with explicit image format', [
+                    'url' => $url,
+                ]);
+                
+                // Method 3: Try with explicit image format selector
+                try {
+                    $arguments = [
+                        $this->ytDlpPath,
+                        '--no-playlist',
+                        '--no-warnings',
+                        '--quiet',
+                        '--no-progress',
+                        '--ignore-errors',
+                        '--cookies', $cookiesPath,
+                        '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                        '--referer', 'https://www.instagram.com/',
+                        '--output', $outputDir . '/%(title)s.%(ext)s',
+                        '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+                        $url,
+                    ];
+
+                    $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                    
+                    $images = array_filter($downloadedFiles, function($file) {
+                        return $this->isImage($file);
+                    });
+                    
+                    if (!empty($images)) {
+                        Log::info('Instagram image downloaded with explicit image format', [
+                            'url' => $url,
+                            'files_count' => count($images),
+                        ]);
+                        return array_values($images);
+                    }
+                } catch (\Exception $e2) {
+                    Log::debug('Explicit image format failed', [
+                        'url' => $url,
+                        'error' => $e2->getMessage(),
+                    ]);
+                }
+            }
+            
+            throw $e;
         }
         
         throw new \RuntimeException('No image files were downloaded with cookies');
@@ -837,7 +858,52 @@ class YtDlpService
     {
         $cookiesPath = config('telegram.instagram_cookies_path');
         
-        // Build arguments for direct image download
+        // Method 1: Try with --write-thumbnail and --skip-download (most reliable for images)
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            try {
+                $arguments = [
+                    $this->ytDlpPath,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--quiet',
+                    '--no-progress',
+                    '--ignore-errors',
+                    '--cookies', $cookiesPath,
+                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    '--referer', 'https://www.instagram.com/',
+                    '--output', $outputDir . '/%(title)s.%(ext)s',
+                    '--write-thumbnail',
+                    '--skip-download',
+                    $url,
+                ];
+
+                $process = new Process($arguments);
+                $process->setTimeout(30);
+                $process->setIdleTimeout(30);
+                $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
+
+                $process->run();
+                
+                if ($process->isSuccessful()) {
+                    // Find thumbnail files
+                    $thumbnails = $this->findDownloadedFiles($outputDir, ['jpg', 'jpeg', 'png', 'webp']);
+                    if (!empty($thumbnails)) {
+                        Log::info('Instagram image downloaded via thumbnail method', [
+                            'url' => $url,
+                            'files_count' => count($thumbnails),
+                        ]);
+                        return array_values($thumbnails);
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::debug('Thumbnail method failed, trying direct download', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+        
+        // Method 2: Try direct download without format selector
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -847,7 +913,6 @@ class YtDlpService
             '--ignore-errors',
         ];
         
-        // Add cookies if available
         if ($cookiesPath && file_exists($cookiesPath)) {
             $arguments[] = '--cookies';
             $arguments[] = $cookiesPath;
@@ -857,69 +922,34 @@ class YtDlpService
             '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
-            '--no-check-certificate',
-            '--write-thumbnail',
-            '--convert-thumbnails', 'jpg',
+            // No format selector - let yt-dlp choose automatically
             $url,
         ]);
-
+        
         try {
             $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
             
-            // Filter to only return image files (exclude videos and other files)
+            // Filter to only return image files
             $images = array_filter($downloadedFiles, function($file) {
                 return $this->isImage($file);
             });
             
             if (!empty($images)) {
+                Log::info('Instagram image downloaded via direct method', [
+                    'url' => $url,
+                    'files_count' => count($images),
+                ]);
                 return array_values($images);
             }
         } catch (\Exception $e) {
-            Log::debug('Direct Instagram image download failed, trying without thumbnail', [
+            Log::debug('Direct download failed', [
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
+            throw $e;
         }
         
-        // Fallback: try without thumbnail options
-        $arguments = [
-            $this->ytDlpPath,
-            '--no-playlist',
-            '--no-warnings',
-            '--quiet',
-            '--no-progress',
-            '--ignore-errors',
-        ];
-        
-        if ($cookiesPath && file_exists($cookiesPath)) {
-            $arguments[] = '--cookies';
-            $arguments[] = $cookiesPath;
-        }
-        
-        $arguments = array_merge($arguments, [
-            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-            '--referer', 'https://www.instagram.com/',
-            '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
-            '--no-check-certificate',
-            $url,
-        ]);
-        
-        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
-        
-        // Filter to only return image files
-        $images = array_filter($downloadedFiles, function($file) {
-            return $this->isImage($file);
-        });
-        
-        if (empty($images)) {
-            throw new \RuntimeException('No image files were downloaded with direct method');
-        }
-        
-        return array_values($images);
+        throw new \RuntimeException('No image files were downloaded with direct method');
     }
     
     /**
@@ -932,26 +962,49 @@ class YtDlpService
      */
     private function downloadInstagramImageMinimal(string $url, string $outputDir): array
     {
+        $cookiesPath = config('telegram.instagram_cookies_path');
+        
+        // Minimal arguments - no format selector, let yt-dlp decide
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
+            '--no-warnings',
+            '--quiet',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best',
-            $url,
         ];
-
-        $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
         
-        // Filter to only return image files
-        $images = array_filter($downloadedFiles, function($file) {
-            return $this->isImage($file);
-        });
-        
-        if (empty($images)) {
-            throw new \RuntimeException('No image files were downloaded with minimal method');
+        // Add cookies if available
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            $arguments[] = '--cookies';
+            $arguments[] = $cookiesPath;
         }
         
-        return array_values($images);
+        $arguments[] = $url;
+
+        try {
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter to only return image files
+            $images = array_filter($downloadedFiles, function($file) {
+                return $this->isImage($file);
+            });
+            
+            if (!empty($images)) {
+                Log::info('Instagram image downloaded with minimal method', [
+                    'url' => $url,
+                    'files_count' => count($images),
+                ]);
+                return array_values($images);
+            }
+        } catch (\Exception $e) {
+            Log::debug('Minimal method failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+        
+        throw new \RuntimeException('No image files were downloaded with minimal method');
     }
     
     /**
