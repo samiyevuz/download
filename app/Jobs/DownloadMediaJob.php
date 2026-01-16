@@ -725,6 +725,8 @@ class DownloadMediaJob implements ShouldQueue
             'chat_id' => $this->chatId,
             'url' => $this->url,
             'error' => $exception->getMessage(),
+            'error_class' => get_class($exception),
+            'trace' => $exception->getTraceAsString(),
             'attempts' => $this->attempts(),
         ]);
 
