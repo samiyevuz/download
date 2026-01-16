@@ -711,10 +711,11 @@ class YtDlpService
     private function downloadInstagramImageWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
         // Try multiple format selectors for better compatibility
+        // For Instagram images, we need to use format selectors that work with image posts
         $formatSelectors = [
+            'best',  // Let yt-dlp choose the best format (works for images)
+            'worst', // Sometimes works when best doesn't
             'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            'best[height<=2160][ext=jpg]/best[height<=2160][ext=jpeg]/best[height<=2160][ext=png]/best[ext=jpg]/best',
-            'best',
         ];
         
         $lastException = null;
@@ -746,16 +747,74 @@ class YtDlpService
                 });
                 
                 if (!empty($images)) {
+                    Log::info('Instagram image downloaded successfully with cookies', [
+                        'url' => $url,
+                        'format' => $format,
+                        'files_count' => count($images),
+                    ]);
                     return array_values($images);
                 }
             } catch (\Exception $e) {
                 $lastException = $e;
+                $errorMsg = strtolower($e->getMessage());
+                
+                // If "No video formats" error, this is expected for image posts, try next format
+                if (str_contains($errorMsg, 'no video formats')) {
+                    Log::debug('Instagram image post - no video formats (expected), trying next format', [
+                        'url' => $url,
+                        'format' => $format,
+                    ]);
+                    continue;
+                }
+                
                 Log::debug('Instagram image download with cookies attempt failed', [
                     'url' => $url,
                     'format' => $format,
                     'error' => $e->getMessage(),
                 ]);
                 continue;
+            }
+        }
+        
+        // If all format selectors failed with "No video formats", try without format selector
+        if ($lastException && str_contains(strtolower($lastException->getMessage()), 'no video formats')) {
+            Log::info('All format selectors failed with "No video formats", trying without format selector', [
+                'url' => $url,
+            ]);
+            
+            try {
+                $arguments = [
+                    $this->ytDlpPath,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--quiet',
+                    '--no-progress',
+                    '--ignore-errors',
+                    '--cookies', $cookiesPath,
+                    '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    '--referer', 'https://www.instagram.com/',
+                    '--output', $outputDir . '/%(title)s.%(ext)s',
+                    '--extractor-args', 'instagram:skip_auth=True',
+                    '--no-check-certificate',
+                    $url,
+                ];
+
+                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                
+                // Filter to only return image files
+                $images = array_filter($downloadedFiles, function($file) {
+                    return $this->isImage($file);
+                });
+                
+                if (!empty($images)) {
+                    Log::info('Instagram image downloaded successfully without format selector', [
+                        'url' => $url,
+                        'files_count' => count($images),
+                    ]);
+                    return array_values($images);
+                }
+            } catch (\Exception $e) {
+                $lastException = $e;
             }
         }
         
@@ -904,52 +963,78 @@ class YtDlpService
      */
     private function downloadInstagramImageWithoutCookies(string $url, string $outputDir): array
     {
-        // Try multiple user agents for better compatibility
+        // Try multiple user agents and format selectors for better compatibility
         $userAgents = [
             'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         ];
         
+        $formatSelectors = [
+            'best',  // Try without specific format first
+            'worst', // Sometimes works when best doesn't
+            'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+        ];
+        
         $lastException = null;
         
         foreach ($userAgents as $userAgent) {
-            try {
-                $arguments = [
-                    $this->ytDlpPath,
-                    '--no-playlist',
-                    '--no-warnings',
-                    '--quiet',
-                    '--no-progress',
-                    '--ignore-errors',
-                    '--user-agent', $userAgent,
-                    '--referer', 'https://www.instagram.com/',
-                    '--add-header', 'Accept-Language:en-US,en;q=0.9',
-                    '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                    '--output', $outputDir . '/%(title)s.%(ext)s',
-                    '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-                    '--extractor-args', 'instagram:skip_auth=True',
-                    $url,
-                ];
+            foreach ($formatSelectors as $format) {
+                try {
+                    $arguments = [
+                        $this->ytDlpPath,
+                        '--no-playlist',
+                        '--no-warnings',
+                        '--quiet',
+                        '--no-progress',
+                        '--ignore-errors',
+                        '--user-agent', $userAgent,
+                        '--referer', 'https://www.instagram.com/',
+                        '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                        '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                        '--output', $outputDir . '/%(title)s.%(ext)s',
+                        '--format', $format,
+                        '--extractor-args', 'instagram:skip_auth=True',
+                        $url,
+                    ];
 
-                $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
-                
-                // Filter to only return image files (exclude videos)
-                $images = array_filter($downloadedFiles, function($file) {
-                    return $this->isImage($file);
-                });
-                
-                if (!empty($images)) {
-                    return array_values($images);
+                    $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+                    
+                    // Filter to only return image files (exclude videos)
+                    $images = array_filter($downloadedFiles, function($file) {
+                        return $this->isImage($file);
+                    });
+                    
+                    if (!empty($images)) {
+                        Log::info('Instagram image downloaded successfully without cookies', [
+                            'url' => $url,
+                            'user_agent' => substr($userAgent, 0, 50) . '...',
+                            'format' => $format,
+                            'files_count' => count($images),
+                        ]);
+                        return array_values($images);
+                    }
+                } catch (\Exception $e) {
+                    $errorMsg = strtolower($e->getMessage());
+                    
+                    // If "No video formats" error, this is expected for image posts, try next format
+                    if (str_contains($errorMsg, 'no video formats')) {
+                        Log::debug('Instagram image post - no video formats (expected), trying next format', [
+                            'url' => $url,
+                            'format' => $format,
+                        ]);
+                        continue;
+                    }
+                    
+                    $lastException = $e;
+                    Log::debug('Instagram image download attempt failed', [
+                        'url' => $url,
+                        'user_agent' => substr($userAgent, 0, 50) . '...',
+                        'format' => $format,
+                        'error' => $e->getMessage(),
+                    ]);
+                    continue;
                 }
-            } catch (\Exception $e) {
-                $lastException = $e;
-                Log::debug('Instagram image download attempt failed', [
-                    'url' => $url,
-                    'user_agent' => $userAgent,
-                    'error' => $e->getMessage(),
-                ]);
-                continue;
             }
         }
         
@@ -1593,7 +1678,15 @@ class YtDlpService
                 
                 $specificError = null;
                 if (str_contains($errorText, 'no video formats') && $isInstagram) {
-                    $specificError = 'Instagram rasm post - video format topilmadi, rasm format qidirilmoqda';
+                    // For Instagram image posts, "No video formats" is expected
+                    // Don't throw error, let the caller handle it (might be image post)
+                    $specificError = 'Instagram rasm post - video format topilmadi (kutilgan), rasm format qidirilmoqda';
+                    Log::warning('Instagram image post detected - no video formats (expected)', [
+                        'url' => $url,
+                        'error' => $errorOutput,
+                    ]);
+                    // Don't throw here - let the caller try alternative methods
+                    throw new \RuntimeException($specificError);
                 } elseif (str_contains($errorText, 'private') || str_contains($errorText, 'login required')) {
                     $specificError = 'Instagram post is private or requires login';
                 } elseif (str_contains($errorText, 'not found') || str_contains($errorText, 'unavailable')) {
