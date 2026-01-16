@@ -1003,14 +1003,31 @@ class YtDlpService
                 // If still no JSON, try combining output and error output
                 if ($jsonData === null && !empty($jsonOutput . $errorOutput)) {
                     $combinedOutput = $jsonOutput . "\n" . $errorOutput;
-                    // Try to find JSON object in combined output
-                    if (preg_match('/\{[^{}]*"url"[^{}]*\}/', $combinedOutput, $matches)) {
+                    // Try to find JSON object in combined output (more comprehensive regex)
+                    // Look for JSON objects that might contain URLs or image data
+                    if (preg_match('/\{[^{}]*(?:"url"|"thumbnail"|"formats"|"display_url")[^{}]*\}/s', $combinedOutput, $matches)) {
                         $decoded = json_decode($matches[0], true);
                         if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
                             $jsonData = $decoded;
-                            Log::debug('JSON found in combined output', ['url' => $url]);
+                            Log::debug('JSON found in combined output via regex', ['url' => $url]);
+                        } else {
+                            // Try to find larger JSON block
+                            if (preg_match('/\{.*"url".*\}/s', $combinedOutput, $largerMatches)) {
+                                $decoded = json_decode($largerMatches[0], true);
+                                if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                                    $jsonData = $decoded;
+                                    Log::debug('JSON found in combined output via larger regex', ['url' => $url]);
+                                }
+                            }
                         }
                     }
+                }
+                
+                // If still no JSON but "No video formats" error, try to get thumbnail directly
+                // Sometimes yt-dlp fails to get JSON but can still get thumbnails
+                if ($jsonData === null && $isNoVideoFormatsError) {
+                    Log::debug('No JSON found but "No video formats" error, trying thumbnail method as fallback', ['url' => $url]);
+                    // This will be handled by the thumbnail method that comes after JSON extraction
                 }
                 
                 if ($jsonData && is_array($jsonData)) {
@@ -1134,32 +1151,48 @@ class YtDlpService
             $process = new Process($arguments);
             $process->setTimeout(30);
             $process->setIdleTimeout(30);
+            $process->setWorkingDirectory($outputDir);
             $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
 
             try {
+                Log::debug('Trying Instagram thumbnail method (write-thumbnail + skip-download)', ['url' => $url]);
                 $process->run();
                 
-                if ($process->isSuccessful()) {
-                    // Find thumbnail files
-                    $thumbnails = $this->findDownloadedFiles($outputDir, ['jpg', 'jpeg', 'png', 'webp']);
-                    if (!empty($thumbnails)) {
-                        Log::info('Instagram image downloaded via thumbnail method', [
-                            'url' => $url,
-                            'files_count' => count($thumbnails),
-                        ]);
-                        return array_values($thumbnails);
-                    }
-                } else {
-                    // Log error for debugging
-                    $errorOutput = $process->getErrorOutput();
-                    Log::debug('Thumbnail method failed', [
+                // Even if process reports failure, check for downloaded thumbnails
+                // Instagram image posts often return "No video formats" but still download thumbnails
+                $errorOutput = $process->getErrorOutput();
+                $isNoVideoFormats = str_contains(strtolower($errorOutput), 'no video formats');
+                
+                // Check for thumbnail files regardless of process success/failure
+                // Especially if "No video formats" error (which is expected for image posts)
+                $thumbnails = $this->findDownloadedFiles($outputDir, ['jpg', 'jpeg', 'png', 'webp']);
+                
+                if (!empty($thumbnails)) {
+                    Log::info('Instagram image downloaded via thumbnail method', [
                         'url' => $url,
-                        'exit_code' => $process->getExitCode(),
-                        'error' => substr($errorOutput, 0, 500),
+                        'files_count' => count($thumbnails),
+                        'process_successful' => $process->isSuccessful(),
+                        'is_no_video_formats' => $isNoVideoFormats,
                     ]);
+                    return array_values($thumbnails);
+                } else {
+                    // Log for debugging if no thumbnails found
+                    if ($isNoVideoFormats) {
+                        Log::debug('No video formats error but no thumbnails found', [
+                            'url' => $url,
+                            'output_dir' => $outputDir,
+                            'error' => substr($errorOutput, 0, 300),
+                        ]);
+                    } else {
+                        Log::debug('Thumbnail method failed', [
+                            'url' => $url,
+                            'exit_code' => $process->getExitCode(),
+                            'error' => substr($errorOutput, 0, 500),
+                        ]);
+                    }
                 }
             } catch (\Exception $e) {
-                Log::debug('Thumbnail method failed, trying direct download', [
+                Log::debug('Thumbnail method exception, trying direct download', [
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
