@@ -1,7 +1,7 @@
 #!/bin/bash
 
-echo "🔧 Majburiy Azolik Tekshiruvini Tuzatish"
-echo "=========================================="
+echo "🔧 Guruhda Chat ID Muammosini Tuzatish"
+echo "======================================="
 echo ""
 
 cd ~/www/download.e-qarz.uz
@@ -9,7 +9,6 @@ cd ~/www/download.e-qarz.uz
 # 1. PHP syntax tekshirish
 echo "1️⃣ PHP syntax tekshirish..."
 php -l app/Http/Controllers/TelegramWebhookController.php
-php -l app/Services/TelegramService.php
 if [ $? -ne 0 ]; then
     echo "❌ PHP syntax xatosi bor!"
     exit 1
@@ -24,14 +23,8 @@ php artisan config:cache
 echo "✅ Config yangilandi"
 echo ""
 
-# 3. Test subscription check
-echo "3️⃣ Subscription check test qilish..."
-chmod +x TEST_SUBSCRIPTION_CHECK.sh
-./TEST_SUBSCRIPTION_CHECK.sh
-echo ""
-
-# 4. Workerlarni qayta ishga tushirish
-echo "4️⃣ Workerlarni qayta ishga tushirish..."
+# 3. Workerlarni qayta ishga tushirish
+echo "3️⃣ Workerlarni qayta ishga tushirish..."
 pkill -9 -f "artisan queue:work" 2>/dev/null
 sleep 2
 
@@ -45,8 +38,8 @@ sleep 3
 echo "✅ Workerlarni ishga tushirdim (PIDs: $DOWNLOAD_PID, $TELEGRAM_PID)"
 echo ""
 
-# 5. Tekshirish
-echo "5️⃣ Workerlarni tekshirish..."
+# 4. Tekshirish
+echo "4️⃣ Workerlarni tekshirish..."
 WORKERS=$(ps aux | grep "artisan queue:work redis" | grep -v grep | grep -v "datacollector" | wc -l)
 if [ "$WORKERS" -ge 2 ]; then
     echo "✅ $WORKERS worker ishlayapti"
@@ -59,19 +52,26 @@ echo ""
 echo "===================================="
 echo "✅ Tugadi!"
 echo ""
-echo "🔧 Tuzatilgan muammolar:"
-echo "   ✨ getRequiredChannels() metodidan to'g'ri foydalanish"
-echo "   ✨ Config to'g'ri o'qilishini ta'minlash"
-echo "   ✨ Batafsil debug logging"
+echo "🔧 Tuzatilgan muammo:"
+echo "   ✨ handleCallbackQuery() metodida chatId to'g'ri olinadi"
+echo "   ✨ Guruhlarda message['chat']['id'] ishlatiladi"
+echo "   ✨ Private chat'larda fallback: from['id']"
+echo "   ✨ Batafsil debug logging qo'shildi"
 echo ""
 echo "📝 Qanday ishlaydi:"
-echo "   1. getRequiredChannels() barcha kanallarni qaytaradi"
-echo "   2. checkChannelMembership() har bir kanalni tekshiradi"
-echo "   3. Agar a'zo bo'lmagan bo'lsa, missing_channels qaytariladi"
-echo "   4. Subscription message'da qaysi kanallar yetishmayotgani ko'rsatiladi"
+echo "   1. Callback query kelganda, chatId message['chat']['id'] dan olinadi"
+echo "   2. Agar message mavjud bo'lmasa, from['id'] dan olinadi (private chat)"
+echo "   3. Guruhlarda barcha xabarlar guruhga yuboriladi"
+echo "   4. Private chat'larda xabarlar foydalanuvchiga yuboriladi"
 echo ""
 echo "🧪 Test qiling:"
-echo "   ./TEST_SUBSCRIPTION_CHECK.sh"
+echo "   1. Botni guruhga qo'shing (admin bo'lmagan holda)"
+echo "   2. Guruhda /start yuboring"
+echo "   3. Til tanlang"
+echo "   4. Xabarlar guruhga yuborilishi kerak (shaxsiy emas)"
 echo ""
-echo "   Yoki botga /start yuboring va til tanlang"
+echo "⚠️  Eslatma:"
+echo "   - Loglarda chat_id, user_id, chat_type ko'rinadi"
+echo "   - Agar muammo bo'lsa, loglarni tekshiring:"
+echo "     tail -f storage/logs/laravel.log | grep callback"
 echo ""

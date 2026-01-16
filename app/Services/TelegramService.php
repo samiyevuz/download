@@ -345,10 +345,11 @@ class TelegramService
 
     /**
      * Get list of required channels
+     * This method is public so it can be called from controller
      *
      * @return array
      */
-    private function getRequiredChannels(): array
+    public function getRequiredChannels(): array
     {
         $channels = [];
         

@@ -84,7 +84,8 @@ class TelegramWebhookController extends Controller
         }
 
         // Check if channel subscription is required
-        $requiredChannels = config('telegram.required_channels');
+        // Use getRequiredChannels() method to get all channels (supports multiple channels)
+        $requiredChannels = $this->telegramService->getRequiredChannels();
         $channelId = config('telegram.required_channel_id');
         $channelUsername = config('telegram.required_channel_username');
 
@@ -93,6 +94,7 @@ class TelegramWebhookController extends Controller
             'user_id' => $userId,
             'chat_type' => $chatType ?? 'private',
             'required_channels' => $requiredChannels,
+            'required_channels_config' => config('telegram.required_channels'),
             'channel_id' => $channelId,
             'channel_username' => $channelUsername,
         ]);
@@ -243,21 +245,33 @@ class TelegramWebhookController extends Controller
      */
     private function handleCallbackQuery(array $callbackQuery): void
     {
-        $chatId = $callbackQuery['from']['id'] ?? null;
+        // Get chat ID from message (for groups) or from user (for private chats)
+        // This is CRITICAL: in groups, we must use message['chat']['id'], not from['id']
+        $message = $callbackQuery['message'] ?? null;
+        $chatId = $message['chat']['id'] ?? $callbackQuery['from']['id'] ?? null;
+        $userId = $callbackQuery['from']['id'] ?? null;
         $callbackData = $callbackQuery['data'] ?? null;
         $callbackQueryId = $callbackQuery['id'] ?? null;
-        $message = $callbackQuery['message'] ?? null;
+        $chatType = $message['chat']['type'] ?? 'private';
 
         if (!$chatId || !$callbackData || !$callbackQueryId) {
+            Log::warning('Invalid callback query', [
+                'callback_query' => $callbackQuery,
+            ]);
             return;
         }
 
+        // Log for debugging
+        Log::debug('Handling callback query', [
+            'chat_id' => $chatId,
+            'user_id' => $userId,
+            'chat_type' => $chatType,
+            'callback_data' => $callbackData,
+        ]);
+
         // Handle subscription check
         if ($callbackData === 'check_subscription') {
-            $userId = $callbackQuery['from']['id'] ?? null;
             $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
-            $message = $callbackQuery['message'] ?? null;
-            $chatType = $message['chat']['type'] ?? 'private';
 
             if (!$userId) {
                 return;
@@ -352,9 +366,9 @@ class TelegramWebhookController extends Controller
         // Handle language selection
         if (str_starts_with($callbackData, 'lang_')) {
             $language = str_replace('lang_', '', $callbackData);
-            $userId = $callbackQuery['from']['id'] ?? $chatId;
             
             // Save language preference first (using Redis cache for 30 days)
+            // Use chat_id for cache key (works for both private and group chats)
             try {
                 \Illuminate\Support\Facades\Cache::put(
                     "user_lang_{$chatId}",
@@ -395,15 +409,13 @@ class TelegramWebhookController extends Controller
 
             // Check subscription after language selection (only for private chats)
             // In groups, subscription check is not required
-            $message = $callbackQuery['message'] ?? null;
-            $chatType = $message['chat']['type'] ?? 'private';
-            
             if (!$this->checkSubscription($userId, $language, $chatType)) {
                 // Subscription required message will be sent by checkSubscription
                 return;
             }
 
-            // If subscribed, send welcome message
+            // If subscribed (or in group), send welcome message
+            // IMPORTANT: Use chatId (which is now correctly set to group chat ID if in group)
             try {
                 \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $language)->onQueue('telegram');
             } catch (\Exception $e) {
