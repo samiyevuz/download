@@ -1,13 +1,13 @@
 #!/bin/bash
 
+# Test URL from command line argument or use default
+TEST_URL="${1:-https://www.instagram.com/p/DThRA3DDLSd/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==}"
+
 echo "🧪 Instagram Rasm Yuklash Test"
 echo "=============================="
 echo ""
 
 cd ~/www/download.e-qarz.uz
-
-# Test URL
-TEST_URL="https://www.instagram.com/p/DThRA3DDLSd/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ=="
 
 echo "📝 Test URL: $TEST_URL"
 echo ""
@@ -69,9 +69,6 @@ if echo "$MEDIA_INFO" | grep -q '"id"\|"title"\|"ext"'; then
     else
         echo "   ❓ Media turi: NOMA'LUM"
     fi
-    
-    # Show first few lines
-    echo "$MEDIA_INFO" | head -20 | sed 's/^/   /'
 else
     echo "❌ Media info olish muvaffaqiyatsiz"
     echo "$MEDIA_INFO" | head -10 | sed 's/^/   /'
@@ -80,15 +77,15 @@ else
 fi
 echo ""
 
-# 5. Rasm yuklash testi (cookies bilan)
+# 5. Rasm yuklash testi (cookies bilan, 'best' format)
 if [ -n "$COOKIES_PATH" ]; then
-    echo "5️⃣ Rasm yuklash testi (cookies bilan)..."
-    echo "   Command: $YT_DLP_PATH --no-playlist --no-warnings --quiet --cookies \"$COOKIES_PATH\" --format 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best' --output \"$TEST_DIR/%(title)s.%(ext)s\" \"$TEST_URL\""
+    echo "5️⃣ Rasm yuklash testi (cookies bilan, 'best' format)..."
+    echo "   Command: $YT_DLP_PATH --no-playlist --no-warnings --quiet --cookies \"$COOKIES_PATH\" --format 'best' --output \"$TEST_DIR/%(title)s.%(ext)s\" \"$TEST_URL\""
     echo ""
     
     DOWNLOAD_OUTPUT=$("$YT_DLP_PATH" --no-playlist --no-warnings --quiet \
         --cookies "$COOKIES_PATH" \
-        --format 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best' \
+        --format 'best' \
         --output "$TEST_DIR/%(title)s.%(ext)s" \
         "$TEST_URL" 2>&1)
     
@@ -96,60 +93,34 @@ if [ -n "$COOKIES_PATH" ]; then
     
     if [ $EXIT_CODE -eq 0 ]; then
         # Check if files were downloaded
-        FILES=$(find "$TEST_DIR" -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.webp" \) 2>/dev/null)
+        FILES=$(find "$TEST_DIR" -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.webp" -o -name "*.mp4" -o -name "*.webm" \) 2>/dev/null)
         
         if [ -n "$FILES" ]; then
             FILE_COUNT=$(echo "$FILES" | wc -l)
-            echo "✅ Rasm muvaffaqiyatli yuklab olindi! ($FILE_COUNT fayl)"
+            echo "✅ Media muvaffaqiyatli yuklab olindi! ($FILE_COUNT fayl)"
             echo "$FILES" | while read -r file; do
                 SIZE=$(du -h "$file" | cut -f1)
-                echo "   📄 $(basename "$file") ($SIZE)"
+                EXT=$(echo "$file" | sed 's/.*\.//')
+                TYPE=""
+                if [[ "$EXT" =~ ^(jpg|jpeg|png|webp)$ ]]; then
+                    TYPE="📸 RASM"
+                elif [[ "$EXT" =~ ^(mp4|webm)$ ]]; then
+                    TYPE="🎥 VIDEO"
+                fi
+                echo "   $TYPE $(basename "$file") ($SIZE)"
             done
         else
             echo "⚠️  Yuklab olish muvaffaqiyatli, lekin fayllar topilmadi"
             echo "$DOWNLOAD_OUTPUT" | tail -5 | sed 's/^/   /'
         fi
     else
-        echo "❌ Rasm yuklash muvaffaqiyatsiz (exit code: $EXIT_CODE)"
+        echo "❌ Media yuklash muvaffaqiyatsiz (exit code: $EXIT_CODE)"
         echo "$DOWNLOAD_OUTPUT" | tail -10 | sed 's/^/   /'
     fi
     echo ""
 fi
 
-# 6. Rasm yuklash testi (cookies'siz)
-echo "6️⃣ Rasm yuklash testi (cookies'siz)..."
-echo "   Command: $YT_DLP_PATH --no-playlist --no-warnings --quiet --format 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best' --output \"$TEST_DIR/%(title)s_no_cookies.%(ext)s\" \"$TEST_URL\""
-echo ""
-
-DOWNLOAD_OUTPUT=$("$YT_DLP_PATH" --no-playlist --no-warnings --quiet \
-    --format 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best' \
-    --output "$TEST_DIR/%(title)s_no_cookies.%(ext)s" \
-    "$TEST_URL" 2>&1)
-
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -eq 0 ]; then
-    # Check if files were downloaded
-    FILES=$(find "$TEST_DIR" -type f \( -name "*_no_cookies.*" \) 2>/dev/null)
-    
-    if [ -n "$FILES" ]; then
-        FILE_COUNT=$(echo "$FILES" | wc -l)
-        echo "✅ Rasm muvaffaqiyatli yuklab olindi (cookies'siz)! ($FILE_COUNT fayl)"
-        echo "$FILES" | while read -r file; do
-            SIZE=$(du -h "$file" | cut -f1)
-            echo "   📄 $(basename "$file") ($SIZE)"
-        done
-    else
-        echo "⚠️  Yuklab olish muvaffaqiyatli, lekin fayllar topilmadi"
-        echo "$DOWNLOAD_OUTPUT" | tail -5 | sed 's/^/   /'
-    fi
-else
-    echo "❌ Rasm yuklash muvaffaqiyatsiz (exit code: $EXIT_CODE)"
-    echo "$DOWNLOAD_OUTPUT" | tail -10 | sed 's/^/   /'
-fi
-echo ""
-
-# 7. Xulosa
+# 6. Xulosa
 echo "===================================="
 echo "📊 Test Xulosasi:"
 echo ""
