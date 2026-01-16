@@ -2812,10 +2812,34 @@ class YtDlpService
                 }
             }
             
-            // Clean and filter URLs - decode HTML entities and filter out non-image URLs
+            // Clean and filter URLs - decode HTML entities and remove crop parameters
             $imageUrls = array_map(function($url) {
                 // Decode HTML entities (e.g., &amp; -> &)
-                return html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $url = html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                
+                // Remove crop parameters from URL to get full-size image
+                // Instagram adds parameters like stp=c270.0.810.810a_dst-jpg_e35_s640x640 which crop the image
+                if (preg_match('/(https?:\/\/[^?]+)\.(jpg|jpeg|png|webp)(\?.*)?/i', $url, $matches)) {
+                    $baseUrl = $matches[1] . '.' . $matches[2];
+                    // Keep only essential parameters, remove crop/size parameters
+                    if (isset($matches[3]) && !empty($matches[3])) {
+                        $queryString = ltrim($matches[3], '?');
+                        parse_str($queryString, $params);
+                        // Remove crop/size parameters
+                        unset($params['stp']);
+                        // Remove size parameters (s640x640, s1080x1080, etc.)
+                        $params = array_filter($params, function($key) {
+                            return !preg_match('/^s\d+x\d+$/', $key) && !preg_match('/^e\d+$/', $key);
+                        }, ARRAY_FILTER_USE_KEY);
+                        // Rebuild URL
+                        if (!empty($params)) {
+                            return $baseUrl . '?' . http_build_query($params);
+                        }
+                    }
+                    return $baseUrl;
+                }
+                
+                return $url;
             }, $imageUrls);
             
             $imageUrls = array_unique($imageUrls);
@@ -2869,6 +2893,47 @@ class YtDlpService
             if (empty($imageUrls)) {
                 throw new \RuntimeException('No image URLs found in HTML');
             }
+            
+            // Clean URLs - remove crop/size parameters to get full-size images
+            $imageUrls = array_map(function($url) {
+                // Parse URL to remove crop parameters
+                $parsedUrl = parse_url($url);
+                if (!isset($parsedUrl['query'])) {
+                    return $url; // No query parameters, return as is
+                }
+                
+                // Parse query string
+                parse_str($parsedUrl['query'], $queryParams);
+                
+                // Remove crop/size parameters that reduce image size:
+                // stp= - crop parameters (e.g., stp=c270.0.810.810a)
+                // s640x640, s1080x1080 - size parameters
+                // e35, e15 - encoding parameters that may affect size
+                unset($queryParams['stp']);
+                
+                // Remove size parameters (e.g., s640x640, s1080x1080)
+                foreach ($queryParams as $key => $value) {
+                    if (preg_match('/^s\d+x\d+$/', $key)) {
+                        unset($queryParams[$key]);
+                    }
+                    // Remove encoding parameters that affect image size
+                    if (preg_match('/^e\d+$/', $key)) {
+                        unset($queryParams[$key]);
+                    }
+                }
+                
+                // Rebuild URL without crop/size parameters
+                $cleanQuery = http_build_query($queryParams);
+                $newUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'] . $parsedUrl['path'];
+                if (!empty($cleanQuery)) {
+                    $newUrl .= '?' . $cleanQuery;
+                }
+                if (isset($parsedUrl['fragment'])) {
+                    $newUrl .= '#' . $parsedUrl['fragment'];
+                }
+                
+                return $newUrl;
+            }, $imageUrls);
             
             // Download images from extracted URLs - prioritize scontent URLs (actual images)
             // Sort URLs to prioritize scontent-* URLs first (these are actual post images)
