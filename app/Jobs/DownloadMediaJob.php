@@ -110,10 +110,24 @@ class DownloadMediaJob implements ShouldQueue
                 'url' => $this->url,
                 'temp_dir' => $tempDir,
                 'attempt' => $this->attempts(),
+                'language' => $this->language,
             ]);
 
             // Download media
+            Log::info('Calling ytDlpService->download', [
+                'chat_id' => $this->chatId,
+                'url' => $this->url,
+                'temp_dir' => $tempDir,
+            ]);
+            
             $downloadedFiles = $ytDlpService->download($this->url, $tempDir);
+            
+            Log::info('ytDlpService->download completed', [
+                'chat_id' => $this->chatId,
+                'url' => $this->url,
+                'downloaded_files_count' => count($downloadedFiles),
+                'downloaded_files' => array_map('basename', $downloadedFiles),
+            ]);
 
             if (empty($downloadedFiles)) {
                 throw new \RuntimeException('No files were downloaded');
