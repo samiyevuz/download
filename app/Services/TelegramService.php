@@ -446,9 +446,9 @@ class TelegramService
         }
 
         $messages = [
-            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanal(lar)ga a'zo bo'ling:\n\n👇 Pastdagi tugmalarni bosing va kanal(lar)ga o'ting, keyin <b>✅ Tekshirish</b> tugmasini bosing.",
-            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующий канал(ы):\n\n👇 Нажмите кнопки ниже и перейдите в канал(ы), затем нажмите <b>✅ Проверить</b>.",
-            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channel(s):\n\n👇 Click the buttons below to join the channel(s), then press <b>✅ Check</b>.",
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующие каналы и нажмите <b>✅ Проверить</b>.",
+            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channels and press <b>✅ Check</b>.",
         ];
 
         $text = $messages[$language] ?? $messages['en'];
@@ -460,6 +460,7 @@ class TelegramService
         $channelButtons = [];
         foreach ($channels as $channel) {
             $channelLink = ltrim($channel, '@');
+            // Format channel name: capitalize first letter (TheUzSoft, Samiyev_blog)
             $channelButtonText = ucfirst($channelLink);
             $channelUrl = "https://t.me/{$channelLink}";
             
