@@ -538,9 +538,9 @@ class TelegramService
         }
 
         $messages = [
-            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>{$missingChannelsText}\n\n📢 A'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
-            'ru' => "🔒 <b>Подписка на канал обязательна!</b>{$missingChannelsText}\n\n📢 Подпишитесь и нажмите <b>✅ Проверить</b>.",
-            'en' => "🔒 <b>Channel subscription required!</b>{$missingChannelsText}\n\n📢 Subscribe and press <b>✅ Check</b>.",
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>{$missingChannelsText}\n\nA'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>{$missingChannelsText}\n\nПодпишитесь и нажмите <b>✅ Проверить</b>.",
+            'en' => "🔒 <b>Channel subscription required!</b>{$missingChannelsText}\n\nSubscribe and press <b>✅ Check</b>.",
         ];
 
         $text = $messages[$language] ?? $messages['en'];
@@ -559,7 +559,7 @@ class TelegramService
             $channelButtonText = ucfirst($channelLink);
             $channelUrl = "https://t.me/{$channelLink}";
             
-            $channelButtons[] = ['text' => "📢 {$channelButtonText}", 'url' => $channelUrl];
+            $channelButtons[] = ['text' => $channelButtonText, 'url' => $channelUrl];
             
             // Add buttons in rows of 2
             if (count($channelButtons) >= 2) {
@@ -575,7 +575,7 @@ class TelegramService
         
         // Add check button
         $keyboard[] = [
-            ['text' => '✅ Tekshirish / Check', 'callback_data' => 'check_subscription'],
+            ['text' => '✅ Tekshirish', 'callback_data' => 'check_subscription'],
         ];
 
         return $this->sendMessageWithKeyboard($chatId, $text, $keyboard);
