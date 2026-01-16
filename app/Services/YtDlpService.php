@@ -50,6 +50,13 @@ class YtDlpService
             foreach ($cookieList as $cookiePath) {
                 $cookiePath = trim($cookiePath);
                 if (!empty($cookiePath)) {
+                    // Convert to absolute path if relative
+                    if (!str_starts_with($cookiePath, '/')) {
+                        // Relative path - convert to absolute
+                        $cookiePath = base_path($cookiePath);
+                    }
+                    // Normalize path (resolve .. and .)
+                    $cookiePath = realpath($cookiePath) ?: $cookiePath;
                     $paths[] = $cookiePath;
                 }
             }
@@ -57,19 +64,38 @@ class YtDlpService
         
         // Fallback to single cookie path
         $singleCookie = config('telegram.instagram_cookies_path');
-        if (!empty($singleCookie) && !in_array($singleCookie, $paths)) {
-            $paths[] = $singleCookie;
+        if (!empty($singleCookie)) {
+            // Convert to absolute path if relative
+            if (!str_starts_with($singleCookie, '/')) {
+                // Relative path - convert to absolute
+                $singleCookie = base_path($singleCookie);
+            }
+            // Normalize path (resolve .. and .)
+            $singleCookie = realpath($singleCookie) ?: $singleCookie;
+            // Only add if not already in paths
+            if (!in_array($singleCookie, $paths)) {
+                $paths[] = $singleCookie;
+            }
         }
         
         // Remove duplicates and filter out empty paths
         $paths = array_unique(array_filter($paths));
         
+        // Filter out paths that don't exist (but keep them for logging)
+        $validPaths = array_filter($paths, function($path) {
+            return file_exists($path) && is_readable($path);
+        });
+        
         Log::debug('Instagram cookies paths', [
             'paths_count' => count($paths),
+            'valid_paths_count' => count($validPaths),
             'paths' => array_map('basename', $paths),
+            'full_paths' => $paths,
+            'valid_full_paths' => array_values($validPaths),
         ]);
         
-        return $paths;
+        // Return valid paths only (as absolute paths)
+        return array_values($validPaths);
     }
 
     /**
@@ -794,6 +820,24 @@ class YtDlpService
      */
     private function downloadInstagramImageWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
+        // Ensure cookie path is absolute
+        if (!str_starts_with($cookiesPath, '/')) {
+            $cookiesPath = base_path($cookiesPath);
+        }
+        $cookiesPath = realpath($cookiesPath) ?: $cookiesPath;
+        
+        // Verify cookie file exists and is readable
+        if (!file_exists($cookiesPath) || !is_readable($cookiesPath)) {
+            throw new \RuntimeException("Cookie file not found or not readable: {$cookiesPath}");
+        }
+        
+        Log::debug('Using cookie file for Instagram download', [
+            'url' => $url,
+            'cookie_path' => $cookiesPath,
+            'cookie_exists' => file_exists($cookiesPath),
+            'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
+        ]);
+        
         // Method 1: List formats first to see what's available
         // This helps us understand what formats Instagram provides
         try {
