@@ -522,25 +522,25 @@ class TelegramService
         $missingChannelsText = '';
         if (!empty($missingChannels)) {
             $missingChannelsList = array_map(function($channel) {
-                return "• @{$channel}";
+                return "@{$channel}";
             }, $missingChannels);
             
-            $missingChannelsText = "\n\n❌ <b>A'zo bo'lmagan kanallar:</b>\n" . implode("\n", $missingChannelsList);
+            $missingChannelsStr = implode(', ', $missingChannelsList);
             
             // Localize missing channels text
             $missingTexts = [
-                'uz' => "\n\n❌ <b>A'zo bo'lmagan kanallar:</b>\n",
-                'ru' => "\n\n❌ <b>Каналы, на которые вы не подписаны:</b>\n",
-                'en' => "\n\n❌ <b>Channels you're not subscribed to:</b>\n",
+                'uz' => "\n\n❌ <b>A'zo bo'lmagan:</b> {$missingChannelsStr}",
+                'ru' => "\n\n❌ <b>Не подписаны:</b> {$missingChannelsStr}",
+                'en' => "\n\n❌ <b>Not subscribed:</b> {$missingChannelsStr}",
             ];
             
-            $missingChannelsText = ($missingTexts[$language] ?? $missingTexts['en']) . implode("\n", $missingChannelsList);
+            $missingChannelsText = $missingTexts[$language] ?? $missingTexts['en'];
         }
 
         $messages = [
-            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.{$missingChannelsText}",
-            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующие каналы и нажмите <b>✅ Проверить</b>.{$missingChannelsText}",
-            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channels and press <b>✅ Check</b>.{$missingChannelsText}",
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>{$missingChannelsText}\n\n📢 A'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>{$missingChannelsText}\n\n📢 Подпишитесь и нажмите <b>✅ Проверить</b>.",
+            'en' => "🔒 <b>Channel subscription required!</b>{$missingChannelsText}\n\n📢 Subscribe and press <b>✅ Check</b>.",
         ];
 
         $text = $messages[$language] ?? $messages['en'];

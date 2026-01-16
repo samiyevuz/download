@@ -260,9 +260,9 @@ class TelegramWebhookController extends Controller
                     $missingChannelsText = implode(', ', $missingChannelsList);
                     
                     $errorMessages = [
-                        'uz' => "❌ Hali quyidagi kanallarga a'zo bo'lmadingiz:\n\n{$missingChannelsText}\n\nIltimos, kanallarga o'ting va qayta urinib ko'ring.",
-                        'ru' => "❌ Вы еще не подписались на следующие каналы:\n\n{$missingChannelsText}\n\nПожалуйста, перейдите в каналы и попробуйте снова.",
-                        'en' => "❌ You have not subscribed to the following channels yet:\n\n{$missingChannelsText}\n\nPlease join the channels and try again.",
+                        'uz' => "❌ A'zo bo'lmagan: {$missingChannelsText}\n\nIltimos, kanallarga o'ting va qayta urinib ko'ring.",
+                        'ru' => "❌ Не подписаны: {$missingChannelsText}\n\nПожалуйста, перейдите в каналы и попробуйте снова.",
+                        'en' => "❌ Not subscribed: {$missingChannelsText}\n\nPlease join the channels and try again.",
                     ];
                     $text = $errorMessages[$language] ?? $errorMessages['en'];
                     \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, true)->onQueue('telegram');
