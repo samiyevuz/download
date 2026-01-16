@@ -29,9 +29,9 @@ class TelegramService
      * @param int|string $chatId
      * @param string $text
      * @param int|null $replyToMessageId
-     * @return bool
+     * @return int|null Message ID if successful, null otherwise
      */
-    public function sendMessage(int|string $chatId, string $text, ?int $replyToMessageId = null): bool
+    public function sendMessage(int|string $chatId, string $text, ?int $replyToMessageId = null): ?int
     {
         try {
             $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/sendMessage", [
@@ -48,13 +48,51 @@ class TelegramService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+                return null;
+            }
+
+            $data = $response->json();
+            return $data['result']['message_id'] ?? null;
+        } catch (\Exception $e) {
+            Log::error('Failed to send Telegram message', [
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Delete message
+     *
+     * @param int|string $chatId
+     * @param int $messageId
+     * @return bool
+     */
+    public function deleteMessage(int|string $chatId, int $messageId): bool
+    {
+        try {
+            $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/deleteMessage", [
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('Telegram API error', [
+                    'method' => 'deleteMessage',
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
                 return false;
             }
 
             return true;
         } catch (\Exception $e) {
-            Log::error('Failed to send Telegram message', [
+            Log::error('Failed to delete Telegram message', [
                 'chat_id' => $chatId,
+                'message_id' => $messageId,
                 'error' => $e->getMessage(),
             ]);
             return false;

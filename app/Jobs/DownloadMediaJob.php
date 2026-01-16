@@ -59,8 +59,8 @@ class DownloadMediaJob implements ShouldQueue
                     $this->cleanup($tempDir);
                 }
             });
-            // Send "Downloading..." message at the start
-            $telegramService->sendMessage(
+            // Send "Downloading..." message at the start and save its message ID
+            $downloadingMessageId = $telegramService->sendMessage(
                 $this->chatId,
                 "⏳ Downloading, please wait...",
                 $this->messageId
@@ -152,6 +152,20 @@ class DownloadMediaJob implements ShouldQueue
                     'url' => $this->url,
                     'files' => $downloadedFiles,
                 ]);
+            }
+
+            // Delete "Downloading..." message after successfully sending media
+            if (isset($downloadingMessageId) && $downloadingMessageId !== null) {
+                try {
+                    $telegramService->deleteMessage($this->chatId, $downloadingMessageId);
+                } catch (\Exception $e) {
+                    // Log but don't fail the job if message deletion fails
+                    Log::warning('Failed to delete downloading message', [
+                        'chat_id' => $this->chatId,
+                        'message_id' => $downloadingMessageId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             $endMemory = memory_get_usage(true);
