@@ -292,4 +292,47 @@ class TelegramService
             return false;
         }
     }
+
+    /**
+     * Send message with inline keyboard (for language selection)
+     *
+     * @param int|string $chatId
+     * @param string $text
+     * @param array $keyboard
+     * @param int|null $replyToMessageId
+     * @return int|null Message ID if successful, null otherwise
+     */
+    public function sendMessageWithKeyboard(int|string $chatId, string $text, array $keyboard, ?int $replyToMessageId = null): ?int
+    {
+        try {
+            $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/sendMessage", [
+                'chat_id' => $chatId,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'reply_to_message_id' => $replyToMessageId,
+                'reply_markup' => [
+                    'inline_keyboard' => $keyboard,
+                ],
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('Telegram API error', [
+                    'method' => 'sendMessageWithKeyboard',
+                    'chat_id' => $chatId,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                return null;
+            }
+
+            $data = $response->json();
+            return $data['result']['message_id'] ?? null;
+        } catch (\Exception $e) {
+            Log::error('Failed to send Telegram message with keyboard', [
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
 }

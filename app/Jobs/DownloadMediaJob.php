@@ -35,9 +35,13 @@ class DownloadMediaJob implements ShouldQueue
     public function __construct(
         public int|string $chatId,
         public string $url,
-        public ?int $messageId = null
+        public ?int $messageId = null,
+        public ?string $language = null
     ) {
-        //
+        // If language not provided, try to get from cache
+        if ($this->language === null) {
+            $this->language = \Illuminate\Support\Facades\Cache::get("user_lang_{$this->chatId}", 'en');
+        }
     }
 
     /**
@@ -59,10 +63,19 @@ class DownloadMediaJob implements ShouldQueue
                     $this->cleanup($tempDir);
                 }
             });
+            // Get localized messages
+            $downloadingMessages = [
+                'uz' => "⏳ Yuklanmoqda, iltimos kuting...",
+                'ru' => "⏳ Загрузка, пожалуйста подождите...",
+                'en' => "⏳ Downloading, please wait...",
+            ];
+            
+            $downloadingMessage = $downloadingMessages[$this->language] ?? $downloadingMessages['en'];
+            
             // Send "Downloading..." message at the start and save its message ID
             $downloadingMessageId = $telegramService->sendMessage(
                 $this->chatId,
-                "⏳ Downloading, please wait...",
+                $downloadingMessage,
                 $this->messageId
             );
 
@@ -99,7 +112,14 @@ class DownloadMediaJob implements ShouldQueue
                 }
             }
 
-            $caption = "📥 Downloaded successfully\n⚡ Fast & Stable Bot";
+            // Get localized caption
+            $captions = [
+                'uz' => "📥 Muvaffaqiyatli yuklandi\n⚡ Tez va Barqaror Bot",
+                'ru' => "📥 Успешно загружено\n⚡ Быстрый и Стабильный Бот",
+                'en' => "📥 Downloaded successfully\n⚡ Fast & Stable Bot",
+            ];
+            
+            $caption = $captions[$this->language] ?? $captions['en'];
 
             // Send videos
             foreach ($videos as $videoPath) {
@@ -203,9 +223,18 @@ class DownloadMediaJob implements ShouldQueue
             // Send error message to user only if we're not retrying
             if (!$shouldRetry || $this->attempts() >= $this->tries) {
                 try {
+                    // Get localized error message
+                    $errorMessages = [
+                        'uz' => "❌ Yuklab olish muvaffaqiyatsiz. Kontent maxfiy yoki mavjud emas.",
+                        'ru' => "❌ Загрузка не удалась. Контент может быть приватным или недоступным.",
+                        'en' => "❌ Download failed. The content may be private or unavailable.",
+                    ];
+                    
+                    $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                    
                     $telegramService->sendMessage(
                         $this->chatId,
-                        "❌ Download failed. The content may be private or unavailable.",
+                        $errorMessage,
                         $this->messageId
                     );
                 } catch (\Exception $sendError) {
@@ -392,10 +421,21 @@ class DownloadMediaJob implements ShouldQueue
 
         // Try to send error message to user
         try {
+            // Get user's language preference
+            $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$this->chatId}", 'en');
+            
+            $errorMessages = [
+                'uz' => "❌ Yuklab olish muvaffaqiyatsiz. Kontent maxfiy yoki mavjud emas.",
+                'ru' => "❌ Загрузка не удалась. Контент может быть приватным или недоступным.",
+                'en' => "❌ Download failed. The content may be private or unavailable.",
+            ];
+            
+            $errorMessage = $errorMessages[$language] ?? $errorMessages['en'];
+            
             $telegramService = app(TelegramService::class);
             $telegramService->sendMessage(
                 $this->chatId,
-                "❌ Download failed. The content may be private or unavailable.",
+                $errorMessage,
                 $this->messageId
             );
         } catch (\Exception $e) {
