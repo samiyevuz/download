@@ -37,7 +37,8 @@ class DownloadMediaJob implements ShouldQueue
         public string $url,
         public ?int $messageId = null,
         public ?string $language = null,
-        public ?int $downloadingMessageId = null
+        public ?int $downloadingMessageId = null,
+        public ?int $userId = null // User ID for fallback to private chat
     ) {
         // If language not provided, try to get from cache
         if ($this->language === null) {
@@ -215,10 +216,55 @@ class DownloadMediaJob implements ShouldQueue
                 );
                 
                 if (!$success) {
-                    Log::warning('Failed to send video', [
+                    Log::warning('Failed to send video to group', [
                         'chat_id' => $this->chatId,
+                        'user_id' => $this->userId,
                         'video_path' => $videoPath,
+                        'file_exists' => file_exists($videoPath),
+                        'file_size' => file_exists($videoPath) ? filesize($videoPath) : null,
                     ]);
+                    
+                    // Fallback: Try to send to user's private chat if bot is not admin in group
+                    if ($this->userId && $this->userId != $this->chatId) {
+                        Log::info('Attempting to send video to user private chat as fallback', [
+                            'user_id' => $this->userId,
+                            'group_chat_id' => $this->chatId,
+                        ]);
+                        
+                        $fallbackSuccess = $telegramService->sendVideo(
+                            $this->userId,
+                            $videoPath,
+                            $caption,
+                            null
+                        );
+                        
+                        if ($fallbackSuccess) {
+                            Log::info('Successfully sent video to user private chat', [
+                                'user_id' => $this->userId,
+                            ]);
+                            
+                            // Notify user in group that media was sent to private chat
+                            $notifyMessages = [
+                                'uz' => "✅ <b>Video shaxsiy xabarga yuborildi</b>\n\n📱 Bot guruhda admin bo'lmaganligi sababli, video shaxsiy xabarga yuborildi.",
+                                'ru' => "✅ <b>Видео отправлено в личные сообщения</b>\n\n📱 Поскольку бот не является администратором группы, видео было отправлено в личные сообщения.",
+                                'en' => "✅ <b>Video sent to private chat</b>\n\n📱 Since bot is not admin in group, video was sent to private chat.",
+                            ];
+                            
+                            $notifyMessage = $notifyMessages[$this->language] ?? $notifyMessages['en'];
+                            $telegramService->sendMessage($this->chatId, $notifyMessage, $this->messageId);
+                            continue; // Success, move to next video
+                        }
+                    }
+                    
+                    // If fallback also failed, show error message
+                    $errorMessages = [
+                        'uz' => "❌ <b>Video yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling yoki botga shaxsiy xabar yuboring.",
+                        'ru' => "❌ <b>Не удалось отправить видео</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы или отправьте боту личное сообщение.",
+                        'en' => "❌ <b>Failed to send video</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin or send bot a private message.",
+                    ];
+                    
+                    $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                    $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
                 }
             }
 
@@ -245,14 +291,29 @@ class DownloadMediaJob implements ShouldQueue
                         ]);
                         
                         // Fallback: send images individually
+                        $individualSuccess = false;
                         foreach (array_slice($images, 0, 10) as $index => $imagePath) {
                             $photoCaption = ($index === 0) ? $caption : null;
-                            $telegramService->sendPhoto(
+                            if ($telegramService->sendPhoto(
                                 $this->chatId,
                                 $imagePath,
                                 $photoCaption,
                                 $this->messageId
-                            );
+                            )) {
+                                $individualSuccess = true;
+                            }
+                        }
+                        
+                        // If all individual sends failed, it's likely a permission issue
+                        if (!$individualSuccess) {
+                            $errorMessages = [
+                                'uz' => "❌ <b>Rasmlar yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling.",
+                                'ru' => "❌ <b>Не удалось отправить изображения</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы.",
+                                'en' => "❌ <b>Failed to send photos</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin.",
+                            ];
+                            
+                            $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                            $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
                         }
                     }
                     
@@ -283,6 +344,16 @@ class DownloadMediaJob implements ShouldQueue
                             'file_exists' => file_exists($images[0]),
                             'file_size' => file_exists($images[0]) ? filesize($images[0]) : null,
                         ]);
+                        
+                        // Check if it's a permission issue in group
+                        $errorMessages = [
+                            'uz' => "❌ <b>Rasm yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling.",
+                            'ru' => "❌ <b>Не удалось отправить изображение</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы.",
+                            'en' => "❌ <b>Failed to send photo</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin.",
+                        ];
+                        
+                        $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                        $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
                     }
                 }
             } else {

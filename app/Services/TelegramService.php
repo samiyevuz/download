@@ -129,12 +129,31 @@ class TelegramService
             ]);
 
             if (!$response->successful()) {
+                $responseBody = $response->body();
+                $responseData = $response->json();
+                
                 Log::error('Telegram API error', [
                     'method' => 'sendPhoto',
                     'chat_id' => $chatId,
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'body' => $responseBody,
+                    'response_data' => $responseData,
                 ]);
+                
+                // Check for specific errors
+                if (str_contains($responseBody, 'bot is not a member') || 
+                    str_contains($responseBody, 'chat not found') ||
+                    str_contains($responseBody, 'not enough rights') ||
+                    str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
+                    str_contains($responseBody, 'CHAT_ADMIN_REQUIRED') ||
+                    str_contains($responseBody, 'can\'t send media messages')) {
+                    Log::error('Bot cannot send media in group - permission issue', [
+                        'chat_id' => $chatId,
+                        'error' => $responseBody,
+                        'solution' => 'Bot must be admin or have "Send Messages" permission in the group',
+                    ]);
+                }
+                
                 return false;
             }
 
@@ -192,12 +211,31 @@ class TelegramService
             ]);
 
             if (!$response->successful()) {
+                $responseBody = $response->body();
+                $responseData = $response->json();
+                
                 Log::error('Telegram API error', [
                     'method' => 'sendVideo',
                     'chat_id' => $chatId,
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'body' => $responseBody,
+                    'response_data' => $responseData,
                 ]);
+                
+                // Check for specific errors
+                if (str_contains($responseBody, 'bot is not a member') || 
+                    str_contains($responseBody, 'chat not found') ||
+                    str_contains($responseBody, 'not enough rights') ||
+                    str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
+                    str_contains($responseBody, 'CHAT_ADMIN_REQUIRED') ||
+                    str_contains($responseBody, 'can\'t send media messages')) {
+                    Log::error('Bot cannot send media in group - permission issue', [
+                        'chat_id' => $chatId,
+                        'error' => $responseBody,
+                        'solution' => 'Bot must be admin or have "Send Messages" permission in the group',
+                    ]);
+                }
+                
                 return false;
             }
 
