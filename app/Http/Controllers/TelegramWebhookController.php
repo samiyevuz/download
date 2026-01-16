@@ -167,75 +167,40 @@ class TelegramWebhookController extends Controller
                 'user_id' => $userId,
             ]);
             
-            // Check if language is already selected (use file cache as fallback)
-            $selectedLanguage = null;
-            try {
-                $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
-            } catch (\Exception $e) {
-                Log::warning('Cache read failed, assuming no language selected', [
-                    'chat_id' => $chatId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-            
-            Log::info('Language check result', [
+            // Always send language selection on /start (user can change language anytime)
+            Log::info('Sending language selection on /start', [
                 'chat_id' => $chatId,
-                'selected_language' => $selectedLanguage,
             ]);
             
-            if ($selectedLanguage) {
-                // Language already selected, send welcome message in selected language
-                Log::info('Language already selected, sending welcome message', [
-                    'chat_id' => $chatId,
-                    'language' => $selectedLanguage,
-                ]);
-                try {
-                    \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
-                } catch (\Exception $e) {
-                    Log::error('Failed to dispatch welcome message job', [
-                        'chat_id' => $chatId,
-                        'error' => $e->getMessage(),
-                    ]);
-                    // Fallback: send simple welcome message
-                    $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
-                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
-                }
-            } else {
-                // Send language selection keyboard DIRECTLY (not via queue for instant response)
-                Log::info('No language selected, sending language selection directly', [
-                    'chat_id' => $chatId,
-                ]);
+            try {
+                $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
                 
-                try {
-                    $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
-                    
-                    $keyboard = [
-                        [
-                            ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
-                        ],
-                        [
-                            ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
-                        ],
-                        [
-                            ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
-                        ],
-                    ];
-                    
-                    $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
-                    
-                    Log::info('Language selection sent directly', [
-                        'chat_id' => $chatId,
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error('Failed to send language selection', [
-                        'chat_id' => $chatId,
-                        'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString(),
-                    ]);
-                    // Fallback: send simple welcome message
-                    $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
-                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
-                }
+                $keyboard = [
+                    [
+                        ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
+                    ],
+                    [
+                        ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
+                    ],
+                    [
+                        ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
+                    ],
+                ];
+                
+                $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
+                
+                Log::info('Language selection sent successfully', [
+                    'chat_id' => $chatId,
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Failed to send language selection', [
+                    'chat_id' => $chatId,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                // Fallback: send simple welcome message
+                $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
+                $this->telegramService->sendMessage($chatId, $welcomeMessage);
             }
             return;
         }
