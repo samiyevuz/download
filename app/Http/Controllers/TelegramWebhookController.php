@@ -162,62 +162,26 @@ class TelegramWebhookController extends Controller
 
         // Handle /start command
         if ($text === '/start') {
-            // Send language selection keyboard FIRST (before subscription check)
-            try {
-                \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
-            } catch (\Exception $e) {
-                Log::warning('Failed to dispatch language selection job', [
-                    'chat_id' => $chatId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+            $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
+            $this->telegramService->sendMessage($chatId, $welcomeMessage);
             return;
         }
 
 
         // Handle URL
         if ($text) {
-            // Check subscription only for private chats (not for groups/supergroups)
-            // In groups, subscription check is not required
-            if (!$this->checkSubscription($userId, $language, $chatType)) {
-                return;
-            }
-
             // Validate and sanitize URL
             $validatedUrl = $this->urlValidator->validateAndSanitize($text);
 
             if (!$validatedUrl) {
-                // Get user's language preference
-                $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
-                
-                $errorMessages = [
-                    'uz' => "❌ <b>Noto'g'ri link</b>\n\n⚠️ Iltimos, to'g'ri Instagram yoki TikTok linkini yuboring.\n\n📝 Misol: <code>https://www.instagram.com/reel/...</code>",
-                    'ru' => "❌ <b>Неверная ссылка</b>\n\n⚠️ Пожалуйста, отправьте действительную ссылку Instagram или TikTok.\n\n📝 Пример: <code>https://www.instagram.com/reel/...</code>",
-                    'en' => "❌ <b>Invalid link</b>\n\n⚠️ Please send a valid Instagram or TikTok link.\n\n📝 Example: <code>https://www.instagram.com/reel/...</code>",
-                ];
-                
-                $errorMessage = $errorMessages[$language] ?? $errorMessages['en'];
-                
-                // Dispatch error message asynchronously
-                \App\Jobs\SendTelegramMessageJob::dispatch(
-                    $chatId,
-                    $errorMessage,
-                    $messageId
-                )->onQueue('telegram');
+                // Invalid URL - send error message
+                $errorMessage = "❌ Please send a valid Instagram or TikTok link.";
+                $this->telegramService->sendMessage($chatId, $errorMessage, $messageId);
                 return;
             }
 
             // Send "Downloading..." message IMMEDIATELY (before dispatching job)
-            // This gives instant feedback to user
-            $downloadingMessages = [
-                'uz' => "⏳ <b>Yuklanmoqda...</b>\n\nIltimos, kuting. Media fayli tayyorlanmoqda.",
-                'ru' => "⏳ <b>Загрузка...</b>\n\nПожалуйста, подождите. Медиа файл готовится.",
-                'en' => "⏳ <b>Downloading...</b>\n\nPlease wait. Media file is being prepared.",
-            ];
-            
-            $downloadingMessage = $downloadingMessages[$language] ?? $downloadingMessages['en'];
-            
-            // Send message immediately (synchronously) for instant feedback
+            $downloadingMessage = "⏳ Downloading, please wait...";
             $downloadingMessageId = $this->telegramService->sendMessage(
                 $chatId,
                 $downloadingMessage,
@@ -225,8 +189,7 @@ class TelegramWebhookController extends Controller
             );
 
             // Dispatch job to queue for async processing
-            // Pass downloading message ID so job can delete it later
-            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, $language, $downloadingMessageId)
+            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, 'en', $downloadingMessageId)
                 ->onQueue('downloads');
 
             Log::info('Download job dispatched', [

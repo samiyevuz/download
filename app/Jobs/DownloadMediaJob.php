@@ -169,14 +169,8 @@ class DownloadMediaJob implements ShouldQueue
                 }
             }
 
-            // Get localized caption
-            $captions = [
-                'uz' => "✅ <b>Muvaffaqiyatli yuklandi!</b>\n\n⚡ Tez va barqaror bot",
-                'ru' => "✅ <b>Успешно загружено!</b>\n\n⚡ Быстрый и стабильный бот",
-                'en' => "✅ <b>Downloaded successfully!</b>\n\n⚡ Fast & stable bot",
-            ];
-            
-            $caption = $captions[$this->language] ?? $captions['en'];
+            // Caption for all media
+            $caption = "📥 Downloaded successfully";
 
             // Send videos
             foreach ($videos as $videoPath) {
@@ -451,20 +445,8 @@ class DownloadMediaJob implements ShouldQueue
                 try {
                     // Get localized error message with more specific info for Instagram
                     if ($isInstagram && str_contains(strtolower($errorMessage), 'rasm')) {
-                        $errorMessages = [
-                            'uz' => "❌ <b>Instagram rasm yuklab olinmadi</b>\n\n⚠️ Instagram API o'zgargan yoki kontent maxfiy bo'lishi mumkin.\n\n💡 Instagram cookies faylini qo'shish yordam berishi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
-                            'ru' => "❌ <b>Не удалось загрузить изображение Instagram</b>\n\n⚠️ API Instagram мог измениться или контент может быть приватным.\n\n💡 Добавление файла cookies Instagram может помочь.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
-                            'en' => "❌ <b>Instagram image download failed</b>\n\n⚠️ Instagram API may have changed or content may be private.\n\n💡 Adding Instagram cookies file may help.\n\n🔗 Please try another link.",
-                        ];
-                    } else {
-                        $errorMessages = [
-                            'uz' => "❌ <b>Yuklab olish muvaffaqiyatsiz</b>\n\n⚠️ Kontent maxfiy bo'lishi yoki mavjud bo'lmasligi mumkin.\n\n🔗 Iltimos, boshqa link yuborib ko'ring.",
-                            'ru' => "❌ <b>Загрузка не удалась</b>\n\n⚠️ Контент может быть приватным или недоступным.\n\n🔗 Пожалуйста, попробуйте другую ссылку.",
-                            'en' => "❌ <b>Download failed</b>\n\n⚠️ The content may be private or unavailable.\n\n🔗 Please try another link.",
-                        ];
-                    }
-                    
-                    $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                // Simple error message as per requirements
+                $errorMessage = "❌ Unable to download this content.";
                     
                     $telegramService->sendMessage(
                         $this->chatId,
@@ -499,6 +481,7 @@ class DownloadMediaJob implements ShouldQueue
     /**
      * Clean up temporary files and directory
      * Guaranteed to execute even on errors
+     * Also cleans up converted JPG files from WebP conversion
      *
      * @param string|null $directory
      * @return void

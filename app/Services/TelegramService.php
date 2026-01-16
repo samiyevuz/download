@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Utils\MediaConverter;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -139,15 +140,7 @@ class TelegramService
             }
 
             // 4. Convert webp to jpg for better compatibility
-            $finalPhotoPath = $photoPath;
-            $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
-            if ($extension === 'webp') {
-                $finalPhotoPath = $this->convertWebpToJpg($photoPath);
-                if ($finalPhotoPath === null) {
-                    Log::warning('Failed to convert webp to jpg, trying original', ['path' => $photoPath]);
-                    $finalPhotoPath = $photoPath; // Fallback to original
-                }
-            }
+            $finalPhotoPath = MediaConverter::convertImageIfNeeded($photoPath);
 
             // 5. Use file handle for memory efficiency (especially for large files)
             $fileHandle = fopen($finalPhotoPath, 'r');
@@ -216,62 +209,6 @@ class TelegramService
         }
     }
 
-    /**
-     * Convert WebP image to JPG for better Telegram compatibility
-     *
-     * @param string $webpPath
-     * @return string|null Path to converted JPG file, or null on failure
-     */
-    private function convertWebpToJpg(string $webpPath): ?string
-    {
-        try {
-            // Check if GD extension is available
-            if (!extension_loaded('gd')) {
-                Log::warning('GD extension not available, cannot convert webp');
-                return null;
-            }
-
-            // Check if webp support is available
-            if (!function_exists('imagecreatefromwebp')) {
-                Log::warning('WebP support not available in GD');
-                return null;
-            }
-
-            // Create image from webp
-            $image = @imagecreatefromwebp($webpPath);
-            if ($image === false) {
-                Log::warning('Failed to create image from webp', ['path' => $webpPath]);
-                return null;
-            }
-
-            // Generate output path
-            $outputPath = str_replace(['.webp', '.WEBP'], '.jpg', $webpPath);
-            
-            // Convert to JPG with 90% quality
-            $success = @imagejpeg($image, $outputPath, 90);
-            imagedestroy($image);
-
-            if (!$success || !file_exists($outputPath)) {
-                Log::warning('Failed to save converted JPG', ['path' => $outputPath]);
-                return null;
-            }
-
-            Log::info('WebP converted to JPG', [
-                'original' => basename($webpPath),
-                'converted' => basename($outputPath),
-                'original_size' => filesize($webpPath),
-                'converted_size' => filesize($outputPath),
-            ]);
-
-            return $outputPath;
-        } catch (\Exception $e) {
-            Log::error('Exception converting webp to jpg', [
-                'path' => $webpPath,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
 
     /**
      * Send video
@@ -305,47 +242,58 @@ class TelegramService
                 return false;
             }
 
-            $response = Http::timeout(60)->attach(
-                'video',
-                file_get_contents($videoPath),
-                basename($videoPath)
-            )->post("{$this->apiUrl}{$this->botToken}/sendVideo", [
+            // Use file handle for memory efficiency
+            $fileHandle = fopen($videoPath, 'r');
+            if ($fileHandle === false) {
+                Log::error('Failed to open video file', ['path' => $videoPath]);
+                return false;
+            }
+
+            try {
+                $response = Http::timeout(60)->attach(
+                    'video',
+                    $fileHandle,
+                    basename($videoPath)
+                )->post("{$this->apiUrl}{$this->botToken}/sendVideo", [
                 'chat_id' => $chatId,
                 'caption' => $caption,
                 'parse_mode' => 'HTML',
                 'reply_to_message_id' => $replyToMessageId,
             ]);
 
-            if (!$response->successful()) {
-                $responseBody = $response->body();
-                $responseData = $response->json();
-                
-                Log::error('Telegram API error', [
-                    'method' => 'sendVideo',
-                    'chat_id' => $chatId,
-                    'status' => $response->status(),
-                    'body' => $responseBody,
-                    'response_data' => $responseData,
-                ]);
-                
-                // Check for specific errors
-                if (str_contains($responseBody, 'bot is not a member') || 
-                    str_contains($responseBody, 'chat not found') ||
-                    str_contains($responseBody, 'not enough rights') ||
-                    str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
-                    str_contains($responseBody, 'CHAT_ADMIN_REQUIRED') ||
-                    str_contains($responseBody, 'can\'t send media messages')) {
-                    Log::error('Bot cannot send media in group - permission issue', [
+                if (!$response->successful()) {
+                    $responseBody = $response->body();
+                    $responseData = $response->json();
+                    
+                    Log::error('Telegram API error', [
+                        'method' => 'sendVideo',
                         'chat_id' => $chatId,
-                        'error' => $responseBody,
-                        'solution' => 'Bot must be admin or have "Send Messages" permission in the group',
+                        'status' => $response->status(),
+                        'body' => $responseBody,
+                        'response_data' => $responseData,
                     ]);
+                    
+                    // Check for specific errors
+                    if (str_contains($responseBody, 'bot is not a member') || 
+                        str_contains($responseBody, 'chat not found') ||
+                        str_contains($responseBody, 'not enough rights') ||
+                        str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
+                        str_contains($responseBody, 'CHAT_ADMIN_REQUIRED') ||
+                        str_contains($responseBody, 'can\'t send media messages')) {
+                        Log::error('Bot cannot send media in group - permission issue', [
+                            'chat_id' => $chatId,
+                            'error' => $responseBody,
+                            'solution' => 'Bot must be admin or have "Send Messages" permission in the group',
+                        ]);
+                    }
+                    
+                    return false;
                 }
-                
-                return false;
-            }
 
-            return true;
+                return true;
+            } finally {
+                fclose($fileHandle);
+            }
         } catch (\Exception $e) {
             Log::error('Failed to send Telegram video', [
                 'chat_id' => $chatId,
@@ -382,15 +330,10 @@ class TelegramService
                     continue;
                 }
 
-                // Convert webp if needed
-                $finalPath = $photoPath;
-                $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
-                if ($extension === 'webp') {
-                    $converted = $this->convertWebpToJpg($photoPath);
-                    if ($converted !== null) {
-                        $finalPath = $converted;
-                        $convertedFiles[] = $converted;
-                    }
+                // Convert webp if needed using MediaConverter
+                $finalPath = MediaConverter::convertImageIfNeeded($photoPath);
+                if ($finalPath !== $photoPath) {
+                    $convertedFiles[] = $finalPath;
                 }
 
                 $media[] = [
@@ -423,16 +366,9 @@ class TelegramService
                 }
 
                 // Use converted path if webp was converted
-                $finalPath = $photoPath;
-                $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
-                if ($extension === 'webp') {
-                    // Find corresponding converted file
-                    foreach ($convertedFiles as $converted) {
-                        if (str_replace(['.webp', '.WEBP'], '.jpg', $photoPath) === $converted) {
-                            $finalPath = $converted;
-                            break;
-                        }
-                    }
+                $finalPath = MediaConverter::convertImageIfNeeded($photoPath);
+                if ($finalPath !== $photoPath && !in_array($finalPath, $convertedFiles)) {
+                    $convertedFiles[] = $finalPath;
                 }
 
                 if (file_exists($finalPath)) {
