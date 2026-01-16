@@ -57,4 +57,20 @@ return [
     */
     
     'instagram_cookies_path' => env('INSTAGRAM_COOKIES_PATH', null),
+    
+    /*
+    |--------------------------------------------------------------------------
+    | Required Channel Subscription
+    |--------------------------------------------------------------------------
+    |
+    | Configuration for mandatory channel subscription.
+    | Users must subscribe to this channel to use the bot.
+    |
+    */
+    
+    'required_channel_id' => env('TELEGRAM_REQUIRED_CHANNEL_ID', null),
+    'required_channel_username' => env('TELEGRAM_REQUIRED_CHANNEL_USERNAME', null),
+    
+    // Multiple channels support (comma-separated)
+    'required_channels' => env('TELEGRAM_REQUIRED_CHANNELS', null), // Format: "channel1,channel2" or "@channel1,@channel2"
 ];

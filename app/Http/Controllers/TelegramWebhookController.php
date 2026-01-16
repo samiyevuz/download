@@ -63,6 +63,34 @@ class TelegramWebhookController extends Controller
     }
 
     /**
+     * Check if user is subscribed to required channel
+     *
+     * @param int|string $userId
+     * @param string $language
+     * @return bool
+     */
+    private function checkSubscription(int|string $userId, string $language = 'en'): bool
+    {
+        // Check if channel subscription is required
+        $channelId = config('telegram.required_channel_id');
+        $channelUsername = config('telegram.required_channel_username');
+
+        // If no channel is configured, allow access
+        if (empty($channelId) && empty($channelUsername)) {
+            return true;
+        }
+
+        // Check membership
+        if (!$this->telegramService->checkChannelMembership($userId)) {
+            // Send subscription required message
+            $this->telegramService->sendSubscriptionRequiredMessage($userId, $language);
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Handle incoming message
      *
      * @param array $message
@@ -71,6 +99,7 @@ class TelegramWebhookController extends Controller
     private function handleMessage(array $message): void
     {
         $chatId = $message['chat']['id'] ?? null;
+        $userId = $message['from']['id'] ?? $chatId;
         $messageId = $message['message_id'] ?? null;
         $text = $message['text'] ?? null;
 
@@ -79,8 +108,16 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // Get user's language preference
+        $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+
         // Handle /start command
         if ($text === '/start') {
+            // Check subscription first
+            if (!$this->checkSubscription($userId, $language)) {
+                return;
+            }
+
             // Send language selection keyboard
             try {
                 \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
@@ -96,6 +133,11 @@ class TelegramWebhookController extends Controller
 
         // Handle URL
         if ($text) {
+            // Check subscription before processing URL
+            if (!$this->checkSubscription($userId, $language)) {
+                return;
+            }
+
             // Validate and sanitize URL
             $validatedUrl = $this->urlValidator->validateAndSanitize($text);
 
@@ -120,9 +162,6 @@ class TelegramWebhookController extends Controller
                 return;
             }
 
-            // Get user's language preference
-            $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
-            
             // Dispatch job to queue for async processing
             // The job itself will send the "Downloading..." message
             DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, $language)
@@ -152,9 +191,78 @@ class TelegramWebhookController extends Controller
             return;
         }
 
+        // Handle subscription check
+        if ($callbackData === 'check_subscription') {
+            $userId = $callbackQuery['from']['id'] ?? null;
+            $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+
+            if (!$userId) {
+                return;
+            }
+
+            // Check membership
+            $isMember = $this->telegramService->checkChannelMembership($userId);
+
+            // Answer callback query
+            try {
+                if ($isMember) {
+                    $successMessages = [
+                        'uz' => '✅ Kanalga a\'zo bo\'ldingiz! Endi botdan foydalanishingiz mumkin.',
+                        'ru' => '✅ Вы подписались на канал! Теперь вы можете использовать бота.',
+                        'en' => '✅ You have subscribed! Now you can use the bot.',
+                    ];
+                    $text = $successMessages[$language] ?? $successMessages['en'];
+                    \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, false)->onQueue('telegram');
+                    
+                    // Delete subscription message
+                    if ($message && isset($message['message_id'])) {
+                        $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                    }
+                    
+                    // Send language selection or welcome message
+                    \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                } else {
+                    $errorMessages = [
+                        'uz' => '❌ Hali kanalga a\'zo bo\'lmadingiz. Iltimos, kanalga o\'ting va qayta urinib ko\'ring.',
+                        'ru' => '❌ Вы еще не подписались на канал. Пожалуйста, перейдите в канал и попробуйте снова.',
+                        'en' => '❌ You have not subscribed yet. Please join the channel and try again.',
+                    ];
+                    $text = $errorMessages[$language] ?? $errorMessages['en'];
+                    \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, true)->onQueue('telegram');
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to handle subscription check', [
+                    'chat_id' => $chatId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            return;
+        }
+
         // Handle language selection
         if (str_starts_with($callbackData, 'lang_')) {
             $language = str_replace('lang_', '', $callbackData);
+            $userId = $callbackQuery['from']['id'] ?? $chatId;
+            
+            // Check subscription before allowing language selection
+            if (!$this->checkSubscription($userId, $language)) {
+                // Answer callback query with error
+                try {
+                    $errorMessages = [
+                        'uz' => '❌ Avval kanalga a\'zo bo\'ling!',
+                        'ru' => '❌ Сначала подпишитесь на канал!',
+                        'en' => '❌ Please subscribe to the channel first!',
+                    ];
+                    $text = $errorMessages[$language] ?? $errorMessages['en'];
+                    \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, true)->onQueue('telegram');
+                } catch (\Exception $e) {
+                    Log::warning('Failed to answer callback query', [
+                        'callback_query_id' => $callbackQueryId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+                return;
+            }
             
             // Save language preference (using Redis cache for 30 days)
             try {

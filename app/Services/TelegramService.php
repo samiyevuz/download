@@ -338,4 +338,150 @@ class TelegramService
             return null;
         }
     }
+
+    /**
+     * Get list of required channels
+     *
+     * @return array
+     */
+    private function getRequiredChannels(): array
+    {
+        $channels = [];
+        
+        // Check for multiple channels (comma-separated)
+        $requiredChannels = config('telegram.required_channels');
+        if (!empty($requiredChannels)) {
+            $channelList = explode(',', $requiredChannels);
+            foreach ($channelList as $channel) {
+                $channel = trim($channel);
+                if (!empty($channel)) {
+                    $channels[] = ltrim($channel, '@');
+                }
+            }
+        }
+        
+        // Fallback to single channel config
+        if (empty($channels)) {
+            $channelId = config('telegram.required_channel_id');
+            $channelUsername = config('telegram.required_channel_username');
+            
+            if ($channelId) {
+                $channels[] = is_numeric($channelId) ? $channelId : ltrim($channelId, '@');
+            } elseif ($channelUsername) {
+                $channels[] = ltrim($channelUsername, '@');
+            }
+        }
+        
+        return $channels;
+    }
+
+    /**
+     * Check if user is member of required channel(s)
+     *
+     * @param int|string $userId
+     * @return bool
+     */
+    public function checkChannelMembership(int|string $userId): bool
+    {
+        $channels = $this->getRequiredChannels();
+
+        // If no channel is configured, allow access
+        if (empty($channels)) {
+            return true;
+        }
+
+        // Check all channels - user must be member of ALL channels
+        foreach ($channels as $channel) {
+            try {
+                $chatId = is_numeric($channel) ? $channel : '@' . $channel;
+
+                $response = Http::timeout(10)->post("{$this->apiUrl}{$this->botToken}/getChatMember", [
+                    'chat_id' => $chatId,
+                    'user_id' => $userId,
+                ]);
+
+                if (!$response->successful()) {
+                    Log::warning('Failed to check channel membership', [
+                        'user_id' => $userId,
+                        'channel' => $channel,
+                        'status' => $response->status(),
+                        'body' => $response->body(),
+                    ]);
+                    return false;
+                }
+
+                $data = $response->json();
+                $status = $data['result']['status'] ?? null;
+
+                // User is member if status is 'member', 'administrator', or 'creator'
+                if (!in_array($status, ['member', 'administrator', 'creator'])) {
+                    return false;
+                }
+            } catch (\Exception $e) {
+                Log::error('Error checking channel membership', [
+                    'user_id' => $userId,
+                    'channel' => $channel,
+                    'error' => $e->getMessage(),
+                ]);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Send subscription required message with channel button(s)
+     *
+     * @param int|string $chatId
+     * @param string $language
+     * @return int|null Message ID if successful, null otherwise
+     */
+    public function sendSubscriptionRequiredMessage(int|string $chatId, string $language = 'en'): ?int
+    {
+        $channels = $this->getRequiredChannels();
+
+        if (empty($channels)) {
+            return null;
+        }
+
+        $messages = [
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>\n\n📢 Botdan foydalanish uchun quyidagi kanal(lar)ga a'zo bo'ling:\n\n👇 Pastdagi tugmalarni bosing va kanal(lar)ga o'ting, keyin <b>✅ Tekshirish</b> tugmasini bosing.",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>\n\n📢 Чтобы использовать бота, подпишитесь на следующий канал(ы):\n\n👇 Нажмите кнопки ниже и перейдите в канал(ы), затем нажмите <b>✅ Проверить</b>.",
+            'en' => "🔒 <b>Channel subscription required!</b>\n\n📢 To use the bot, please subscribe to the following channel(s):\n\n👇 Click the buttons below to join the channel(s), then press <b>✅ Check</b>.",
+        ];
+
+        $text = $messages[$language] ?? $messages['en'];
+
+        // Create keyboard with channel buttons
+        $keyboard = [];
+        
+        // Add channel buttons (max 2 per row for better layout)
+        $channelButtons = [];
+        foreach ($channels as $channel) {
+            $channelLink = ltrim($channel, '@');
+            $channelButtonText = ucfirst($channelLink);
+            $channelUrl = "https://t.me/{$channelLink}";
+            
+            $channelButtons[] = ['text' => "📢 {$channelButtonText}", 'url' => $channelUrl];
+            
+            // Add buttons in rows of 2
+            if (count($channelButtons) >= 2) {
+                $keyboard[] = $channelButtons;
+                $channelButtons = [];
+            }
+        }
+        
+        // Add remaining buttons
+        if (!empty($channelButtons)) {
+            $keyboard[] = $channelButtons;
+        }
+        
+        // Add check button
+        $keyboard[] = [
+            ['text' => '✅ Tekshirish / Check', 'callback_data' => 'check_subscription'],
+        ];
+
+        return $this->sendMessageWithKeyboard($chatId, $text, $keyboard);
+    }
 }
