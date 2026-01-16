@@ -2656,16 +2656,57 @@ class YtDlpService
             
             $context = stream_context_create($contextOptions);
             
-            // Fetch HTML
+            // Fetch HTML - try file_get_contents first, then curl as fallback
             $html = @file_get_contents($url, false, $context);
             
+            // If file_get_contents failed, try with curl
             if ($html === false || empty($html)) {
-                throw new \RuntimeException('Failed to fetch Instagram page HTML');
+                Log::debug('file_get_contents failed, trying curl', ['url' => $url]);
+                
+                if (function_exists('curl_init')) {
+                    $ch = curl_init();
+                    curl_setopt($ch, CURLOPT_URL, $url);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                    curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+                    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1');
+                    
+                    // Add cookies if available
+                    if ($cookiesPath && file_exists($cookiesPath)) {
+                        curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
+                        curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
+                    }
+                    
+                    $html = @curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    $curlError = curl_error($ch);
+                    curl_close($ch);
+                    
+                    if ($html === false || empty($html) || $httpCode !== 200) {
+                        Log::error('Failed to fetch Instagram HTML with curl', [
+                            'url' => $url,
+                            'http_code' => $httpCode,
+                            'curl_error' => $curlError,
+                        ]);
+                        throw new \RuntimeException('Failed to fetch Instagram page HTML: ' . ($curlError ?: 'HTTP ' . $httpCode));
+                    }
+                    
+                    Log::info('Instagram HTML fetched successfully with curl', [
+                        'url' => $url,
+                        'http_code' => $httpCode,
+                        'html_length' => strlen($html),
+                        'method' => 'curl',
+                    ]);
+                } else {
+                    throw new \RuntimeException('Failed to fetch Instagram page HTML: file_get_contents failed and curl not available');
+                }
             }
             
-            Log::debug('Instagram HTML fetched successfully', [
+            Log::info('Instagram HTML fetched successfully', [
                 'url' => $url,
                 'html_length' => strlen($html),
+                'method' => 'file_get_contents',
             ]);
             
             // Extract image URLs from HTML
@@ -2732,30 +2773,77 @@ class YtDlpService
                 $imageUrls = array_merge($imageUrls, $displayUrlMatches[1]);
             }
             
+            // Method 6: Extract from thumbnail_url pattern
+            if (preg_match_all('/"thumbnail_url":\s*"([^"]+)"/i', $html, $thumbMatches)) {
+                $imageUrls = array_merge($imageUrls, $thumbMatches[1]);
+            }
+            
+            // Method 7: Extract from srcset attributes (Instagram uses these)
+            if (preg_match_all('/srcset=["\']([^"\']+)["\']/i', $html, $srcsetMatches)) {
+                foreach ($srcsetMatches[1] as $srcset) {
+                    // Parse srcset (format: url width, url width, ...)
+                    if (preg_match_all('/(https?:\/\/[^\s,]+)/i', $srcset, $urlMatches)) {
+                        $imageUrls = array_merge($imageUrls, $urlMatches[1]);
+                    }
+                }
+            }
+            
+            // Method 8: Extract from any Instagram CDN URLs directly in HTML
+            if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp))/i', $html, $cdnMatches)) {
+                $imageUrls = array_merge($imageUrls, $cdnMatches[1]);
+            }
+            
+            // Method 9: Extract from data-src attributes (lazy loading)
+            if (preg_match_all('/data-src=["\']([^"\']+)["\']/i', $html, $dataSrcMatches)) {
+                foreach ($dataSrcMatches[1] as $dataSrc) {
+                    if (str_contains($dataSrc, 'instagram.com') || str_contains($dataSrc, 'cdninstagram.com') || 
+                        str_contains($dataSrc, 'fbcdn.net') || preg_match('/\.(jpg|jpeg|png|webp)/i', $dataSrc)) {
+                        $imageUrls[] = $dataSrc;
+                    }
+                }
+            }
+            
+            // Method 10: Extract from script tags with JSON (comprehensive regex)
+            if (preg_match_all('/<script[^>]*>.*?"(display_url|thumbnail_url|src)":\s*"([^"]+)"[^<]*<\/script>/is', $html, $scriptMatches)) {
+                foreach ($scriptMatches[2] as $scriptUrl) {
+                    if (filter_var($scriptUrl, FILTER_VALIDATE_URL)) {
+                        $imageUrls[] = $scriptUrl;
+                    }
+                }
+            }
+            
             // Clean and filter URLs
             $imageUrls = array_unique($imageUrls);
             $imageUrls = array_filter($imageUrls, function($url) {
+                // Decode HTML entities
+                $url = html_entity_decode($url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                
+                // Remove query parameters for validation, but keep them for download
+                $cleanUrl = strtok($url, '?');
+                
                 // Only keep valid image URLs
-                // Instagram CDN URLs might not have file extensions, so check for instagram/cdninstagram domains
-                if (!filter_var($url, FILTER_VALIDATE_URL)) {
+                if (!filter_var($cleanUrl, FILTER_VALIDATE_URL)) {
                     return false;
                 }
+                
                 // Accept URLs from Instagram CDN domains (even without extensions)
                 if (str_contains($url, 'instagram.com') || str_contains($url, 'cdninstagram.com') || str_contains($url, 'fbcdn.net')) {
-                    // Also check for image-like patterns in URL path
+                    // Check for image-like patterns in URL path or parameters
                     return str_contains($url, '/media/') || str_contains($url, '/scontent/') || 
-                           str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
-                           str_contains($url, '.png') || str_contains($url, '.webp');
+                           str_contains($url, '/p/') || str_contains($url, '/t51.') ||
+                           str_contains($url, '/t52.') || str_contains($url, '/t64.') ||
+                           preg_match('/\.(jpg|jpeg|png|webp)/i', $url) ||
+                           preg_match('/[?&](url|src|image|media)=/i', $url);
                 }
+                
                 // For other domains, require file extension
-                return str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
-                       str_contains($url, '.png') || str_contains($url, '.webp');
+                return preg_match('/\.(jpg|jpeg|png|webp|gif|bmp)/i', $url);
             });
             
-            Log::debug('Image URLs extracted from HTML', [
+            Log::info('Image URLs extracted from HTML', [
                 'url' => $url,
                 'image_urls_count' => count($imageUrls),
-                'image_urls' => array_slice($imageUrls, 0, 3), // First 3 for logging
+                'image_urls_preview' => array_slice($imageUrls, 0, 3), // First 3 for logging
             ]);
             
             if (empty($imageUrls)) {
