@@ -756,8 +756,11 @@ class YtDlpService
         
         // Method 6: Last resort - Try to extract image URL from HTML page directly
         // This is used when yt-dlp cannot get JSON or download files
+        Log::info('Method 6: Trying HTML parsing method as last resort', [
+            'url' => $url,
+            'errors_so_far' => count($allErrors),
+        ]);
         try {
-            Log::info('Trying HTML parsing method as last resort', ['url' => $url]);
             $result = $this->downloadInstagramImageFromHtml($url, $outputDir);
             if (!empty($result)) {
                 Log::info('Instagram image downloaded via HTML parsing method', [
@@ -766,11 +769,14 @@ class YtDlpService
                 ]);
                 return $result;
             }
+            Log::warning('HTML parsing method returned empty result', ['url' => $url]);
+            $allErrors[] = 'HTML parsing method: No files downloaded';
         } catch (\Exception $e) {
             $allErrors[] = 'HTML parsing method: ' . $e->getMessage();
             Log::warning('Instagram HTML parsing method failed', [
                 'url' => $url,
                 'error' => $e->getMessage(),
+                'trace' => substr($e->getTraceAsString(), 0, 500),
             ]);
         }
         
@@ -2594,7 +2600,10 @@ class YtDlpService
     private function downloadInstagramImageFromHtml(string $url, string $outputDir): array
     {
         try {
-            Log::debug('Attempting HTML parsing method for Instagram image', ['url' => $url]);
+            Log::info('Attempting HTML parsing method for Instagram image', [
+                'url' => $url,
+                'output_dir' => $outputDir,
+            ]);
             
             // Try with cookies if available
             $cookiesPaths = $this->getInstagramCookiesPaths();
@@ -2727,10 +2736,20 @@ class YtDlpService
             $imageUrls = array_unique($imageUrls);
             $imageUrls = array_filter($imageUrls, function($url) {
                 // Only keep valid image URLs
-                return filter_var($url, FILTER_VALIDATE_URL) && 
-                       (str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
-                        str_contains($url, '.png') || str_contains($url, '.webp') ||
-                        str_contains($url, 'instagram.com') || str_contains($url, 'cdninstagram.com'));
+                // Instagram CDN URLs might not have file extensions, so check for instagram/cdninstagram domains
+                if (!filter_var($url, FILTER_VALIDATE_URL)) {
+                    return false;
+                }
+                // Accept URLs from Instagram CDN domains (even without extensions)
+                if (str_contains($url, 'instagram.com') || str_contains($url, 'cdninstagram.com') || str_contains($url, 'fbcdn.net')) {
+                    // Also check for image-like patterns in URL path
+                    return str_contains($url, '/media/') || str_contains($url, '/scontent/') || 
+                           str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
+                           str_contains($url, '.png') || str_contains($url, '.webp');
+                }
+                // For other domains, require file extension
+                return str_contains($url, '.jpg') || str_contains($url, '.jpeg') || 
+                       str_contains($url, '.png') || str_contains($url, '.webp');
             });
             
             Log::debug('Image URLs extracted from HTML', [
