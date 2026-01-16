@@ -1296,8 +1296,10 @@ class YtDlpService
                 $process = new Process($arguments);
                 $process->setTimeout(30);
                 $process->setIdleTimeout(30);
+                $process->setWorkingDirectory($outputDir);
                 $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
 
+                Log::debug('Trying Instagram thumbnail method', ['url' => $url]);
                 $process->run();
                 
                 if ($process->isSuccessful()) {
@@ -1307,19 +1309,33 @@ class YtDlpService
                         Log::info('Instagram image downloaded via thumbnail method', [
                             'url' => $url,
                             'files_count' => count($thumbnails),
+                            'files' => array_map('basename', $thumbnails),
                         ]);
                         return array_values($thumbnails);
+                    } else {
+                        Log::debug('Thumbnail method successful but no files found, trying full download', [
+                            'url' => $url,
+                            'output_dir' => $outputDir,
+                        ]);
                     }
+                } else {
+                    $errorOutput = $process->getErrorOutput();
+                    $stdOutput = $process->getOutput();
+                    Log::debug('Thumbnail method failed', [
+                        'url' => $url,
+                        'error' => $errorOutput,
+                        'output' => substr($stdOutput, 0, 200),
+                    ]);
                 }
             } catch (\Exception $e) {
-                Log::debug('Thumbnail method failed, trying direct download', [
+                Log::debug('Thumbnail method exception, trying direct download', [
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
             }
         }
         
-        // Method 2: Try direct download without format selector
+        // Method 2: Try direct download with image format selector
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -1338,7 +1354,8 @@ class YtDlpService
             '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            // No format selector - let yt-dlp choose automatically
+            // Try image format first, then best
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
             $url,
         ]);
         
@@ -1351,12 +1368,55 @@ class YtDlpService
             });
             
             if (!empty($images)) {
-                Log::info('Instagram image downloaded via direct method', [
+                Log::info('Instagram image downloaded via direct method with format selector', [
                     'url' => $url,
                     'files_count' => count($images),
                 ]);
                 return array_values($images);
             }
+        } catch (\RuntimeException $e) {
+            // If "no video formats" error for image post, try without format selector
+            if (str_contains($e->getMessage(), 'video format topilmadi')) {
+                Log::debug('No video formats error caught, trying without format selector', [
+                    'url' => $url,
+                ]);
+                
+                // Try again without format selector
+                $argumentsNoFormat = array_filter($arguments, function($arg) {
+                    return $arg !== '--format' && $arg !== 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best';
+                });
+                $argumentsNoFormat = array_values($argumentsNoFormat);
+                $argumentsNoFormat[] = $url;
+                
+                try {
+                    $downloadedFiles = $this->executeDownload($argumentsNoFormat, $url, $outputDir);
+                    
+                    // Filter to only return image files
+                    $images = array_filter($downloadedFiles, function($file) {
+                        return $this->isImage($file);
+                    });
+                    
+                    if (!empty($images)) {
+                        Log::info('Instagram image downloaded via direct method without format selector', [
+                            'url' => $url,
+                            'files_count' => count($images),
+                        ]);
+                        return array_values($images);
+                    }
+                } catch (\Exception $e2) {
+                    Log::debug('Direct download without format selector also failed', [
+                        'url' => $url,
+                        'error' => $e2->getMessage(),
+                    ]);
+                    throw $e2;
+                }
+            }
+            
+            Log::debug('Direct download failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
         } catch (\Exception $e) {
             Log::debug('Direct download failed', [
                 'url' => $url,
@@ -2215,15 +2275,34 @@ class YtDlpService
                     // Check if this is an image post by URL pattern
                     $isImagePost = str_contains($url, '/p/') && !str_contains($url, '/reel/') && !str_contains($url, '/tv/');
                     
-                    if ($isImagePost) {
-                        // This is likely an image post, "No video formats" is expected
-                        $specificError = 'Instagram rasm post - video format topilmadi (kutilgan), rasm format qidirilmoqda';
-                        Log::info('Instagram image post detected - no video formats (expected)', [
-                            'url' => $url,
-                            'error' => $errorOutput,
-                        ]);
-                        // Throw with specific error so caller can handle it
-                        throw new \RuntimeException($specificError);
+                if ($isImagePost) {
+                    // This is likely an image post, "No video formats" is expected
+                    // Try to find downloaded files anyway (might have downloaded images)
+                    Log::info('Instagram image post detected - no video formats (expected), checking for downloaded images', [
+                        'url' => $url,
+                        'error' => $errorOutput,
+                    ]);
+                    
+                    // Check if any files were downloaded despite the error
+                    $downloadedFiles = $this->findDownloadedFiles($outputDir);
+                    if (!empty($downloadedFiles)) {
+                        // Filter to only return image files
+                        $images = array_filter($downloadedFiles, function($file) {
+                            return $this->isImage($file);
+                        });
+                        
+                        if (!empty($images)) {
+                            Log::info('Instagram images found despite "no video formats" error', [
+                                'url' => $url,
+                                'files_count' => count($images),
+                            ]);
+                            return array_values($images);
+                        }
+                    }
+                    
+                    // If no files found, throw exception so caller can try another method
+                    $specificError = 'Instagram rasm post - video format topilmadi (kutilgan), rasm format qidirilmoqda';
+                    throw new \RuntimeException($specificError);
                     } else {
                         // Might be a video post, but no formats found
                         $specificError = 'Instagram post - video format topilmadi';
