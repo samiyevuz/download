@@ -484,40 +484,52 @@ class TelegramWebhookController extends Controller
                 'chat_type' => $chatType,
             ]);
             
+            // Send welcome message directly (synchronously) for immediate response
+            // Queue can be slow, so we send directly to ensure user sees the message
             try {
-                \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $language)->onQueue('telegram');
-                Log::info('Welcome message job dispatched', [
-                    'chat_id' => $chatId,
-                    'language' => $language,
-                ]);
+                $welcomeMessages = [
+                    'uz' => "Welcome.\nSend an Instagram or TikTok link.",
+                    'ru' => "Welcome.\nSend an Instagram or TikTok link.",
+                    'en' => "Welcome.\nSend an Instagram or TikTok link.",
+                ];
+                $welcomeMessage = $welcomeMessages[$language] ?? $welcomeMessages['en'];
+                
+                $messageId = $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                
+                if ($messageId) {
+                    Log::info('Welcome message sent successfully (direct)', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                        'message_id' => $messageId,
+                    ]);
+                } else {
+                    Log::warning('Welcome message send returned null, trying via queue', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                    ]);
+                    
+                    // Fallback: try via queue if direct send failed
+                    try {
+                        \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $language)->onQueue('telegram');
+                        Log::info('Welcome message job dispatched (fallback)', [
+                            'chat_id' => $chatId,
+                            'language' => $language,
+                        ]);
+                    } catch (\Exception $queueError) {
+                        Log::error('Failed to dispatch welcome message job', [
+                            'chat_id' => $chatId,
+                            'language' => $language,
+                            'error' => $queueError->getMessage(),
+                        ]);
+                    }
+                }
             } catch (\Exception $e) {
-                Log::error('Failed to dispatch welcome message job', [
+                Log::error('Failed to send welcome message', [
                     'chat_id' => $chatId,
                     'language' => $language,
                     'error' => $e->getMessage(),
                     'trace' => $e->getTraceAsString(),
                 ]);
-                
-                // Fallback: send welcome message directly (synchronously)
-                try {
-                    $welcomeMessages = [
-                        'uz' => "Welcome.\nSend an Instagram or TikTok link.",
-                        'ru' => "Welcome.\nSend an Instagram or TikTok link.",
-                        'en' => "Welcome.\nSend an Instagram or TikTok link.",
-                    ];
-                    $welcomeMessage = $welcomeMessages[$language] ?? $welcomeMessages['en'];
-                    $this->telegramService->sendMessage($chatId, $welcomeMessage);
-                    Log::info('Welcome message sent directly (fallback)', [
-                        'chat_id' => $chatId,
-                        'language' => $language,
-                    ]);
-                } catch (\Exception $fallbackError) {
-                    Log::error('Failed to send welcome message even with fallback', [
-                        'chat_id' => $chatId,
-                        'language' => $language,
-                        'error' => $fallbackError->getMessage(),
-                    ]);
-                }
             }
         }
     }

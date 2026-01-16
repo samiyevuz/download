@@ -30,6 +30,11 @@ class SendTelegramWelcomeMessageJob implements ShouldQueue
     public function handle(TelegramService $telegramService): void
     {
         try {
+            Log::info('SendTelegramWelcomeMessageJob started', [
+                'chat_id' => $this->chatId,
+                'language' => $this->language,
+            ]);
+
             $messages = [
                 'uz' => "Welcome.\nSend an Instagram or TikTok link.",
                 'ru' => "Welcome.\nSend an Instagram or TikTok link.",
@@ -37,12 +42,33 @@ class SendTelegramWelcomeMessageJob implements ShouldQueue
             ];
 
             $message = $messages[$this->language] ?? $messages['en'];
-            $telegramService->sendMessage($this->chatId, $message);
+            
+            Log::info('Sending welcome message', [
+                'chat_id' => $this->chatId,
+                'language' => $this->language,
+                'message' => $message,
+            ]);
+            
+            $messageId = $telegramService->sendMessage($this->chatId, $message);
+            
+            if ($messageId) {
+                Log::info('Welcome message sent successfully', [
+                    'chat_id' => $this->chatId,
+                    'language' => $this->language,
+                    'message_id' => $messageId,
+                ]);
+            } else {
+                Log::warning('Welcome message send returned null', [
+                    'chat_id' => $this->chatId,
+                    'language' => $this->language,
+                ]);
+            }
         } catch (\Exception $e) {
             Log::error('Failed to send welcome message', [
                 'chat_id' => $this->chatId,
                 'language' => $this->language,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             throw $e;
         }
