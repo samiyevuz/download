@@ -127,6 +127,7 @@ class TelegramWebhookController extends Controller
         $userId = $message['from']['id'] ?? $chatId;
         $messageId = $message['message_id'] ?? null;
         $text = $message['text'] ?? null;
+        $chatType = $message['chat']['type'] ?? 'private'; // private, group, supergroup, channel
 
         if (!$chatId) {
             Log::warning('Message without chat_id', ['message' => $message]);
@@ -135,6 +136,14 @@ class TelegramWebhookController extends Controller
 
         // Get user's language preference
         $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+
+        // Log chat type for debugging
+        Log::debug('Message received', [
+            'chat_id' => $chatId,
+            'chat_type' => $chatType,
+            'user_id' => $userId,
+            'text' => $text ? substr($text, 0, 50) : null,
+        ]);
 
         // Handle /start command
         if ($text === '/start') {
@@ -153,8 +162,11 @@ class TelegramWebhookController extends Controller
 
         // Handle URL
         if ($text) {
-            // Check subscription before processing URL
-            if (!$this->checkSubscription($userId, $language)) {
+            // Check subscription only for private chats (not for groups/supergroups)
+            // In groups, subscription check is not required
+            $isPrivateChat = in_array($chatType, ['private']);
+            
+            if ($isPrivateChat && !$this->checkSubscription($userId, $language)) {
                 return;
             }
 
@@ -338,8 +350,13 @@ class TelegramWebhookController extends Controller
                 }
             }
 
-            // Check subscription after language selection
-            if (!$this->checkSubscription($userId, $language)) {
+            // Check subscription after language selection (only for private chats)
+            // In groups, subscription check is not required
+            $message = $callbackQuery['message'] ?? null;
+            $chatType = $message['chat']['type'] ?? 'private';
+            $isPrivateChat = in_array($chatType, ['private']);
+            
+            if ($isPrivateChat && !$this->checkSubscription($userId, $language)) {
                 // Subscription required message will be sent by checkSubscription
                 return;
             }
