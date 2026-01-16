@@ -933,6 +933,7 @@ class YtDlpService
                 '--cookies', $cookiesPath,
                 '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                 '--referer', 'https://www.instagram.com/',
+                '--extractor-args', 'instagram:skip_auth=False',
                 '--output', $outputDir . '/%(title)s.%(ext)s',
                 '--write-thumbnail',
                 '--skip-download',
@@ -957,6 +958,14 @@ class YtDlpService
                         ]);
                         return array_values($thumbnails);
                     }
+                } else {
+                    // Log error for debugging
+                    $errorOutput = $process->getErrorOutput();
+                    Log::debug('Thumbnail method failed', [
+                        'url' => $url,
+                        'exit_code' => $process->getExitCode(),
+                        'error' => substr($errorOutput, 0, 500),
+                    ]);
                 }
             } catch (\Exception $e) {
                 Log::debug('Thumbnail method failed, trying direct download', [
@@ -1062,6 +1071,7 @@ class YtDlpService
                         '--cookies', $cookiesPath,
                         '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                         '--referer', 'https://www.instagram.com/',
+                        '--extractor-args', 'instagram:skip_auth=False',
                         '--output', $outputDir . '/%(title)s.%(ext)s',
                         '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
                         $url,
