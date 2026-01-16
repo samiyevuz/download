@@ -844,15 +844,29 @@ class YtDlpService
         $cookiesPath = config('telegram.instagram_cookies_path');
         
         // Method 1: Try with cookies (most reliable)
-        if ($cookiesPath && file_exists($cookiesPath)) {
+        if ($cookiesPath && file_exists($cookiesPath) && filesize($cookiesPath) > 100) {
             try {
-                return $this->downloadWithCookies($url, $outputDir, $cookiesPath);
+                $result = $this->downloadWithCookies($url, $outputDir, $cookiesPath);
+                
+                // If we got files, return them
+                if (!empty($result)) {
+                    return $result;
+                }
             } catch (\Exception $e) {
                 Log::warning('Instagram download with cookies failed, trying fallback', [
                     'url' => $url,
                     'error' => $e->getMessage(),
+                    'cookies_path' => $cookiesPath,
+                    'cookies_file_exists' => file_exists($cookiesPath),
+                    'cookies_file_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
                 ]);
             }
+        } else {
+            Log::warning('Instagram cookies file not available or invalid', [
+                'cookies_path' => $cookiesPath,
+                'file_exists' => $cookiesPath && file_exists($cookiesPath),
+                'file_size' => ($cookiesPath && file_exists($cookiesPath)) ? filesize($cookiesPath) : 0,
+            ]);
         }
 
         // Method 2: Try with enhanced headers
@@ -865,7 +879,16 @@ class YtDlpService
             ]);
             
             // Method 3: Try with alternative format selector for images
-            return $this->downloadInstagramAlternative($url, $outputDir);
+            try {
+                return $this->downloadInstagramAlternative($url, $outputDir);
+            } catch (\Exception $e2) {
+                Log::error('All Instagram download methods failed', [
+                    'url' => $url,
+                    'cookies_error' => $e->getMessage(),
+                    'alternative_error' => $e2->getMessage(),
+                ]);
+                throw $e2;
+            }
         }
     }
     
@@ -918,6 +941,24 @@ class YtDlpService
      */
     private function downloadWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
+        // Check if cookies file is valid
+        if (!file_exists($cookiesPath) || filesize($cookiesPath) < 100) {
+            Log::warning('Cookies file is missing or too small, trying without cookies', [
+                'cookies_path' => $cookiesPath,
+                'file_exists' => file_exists($cookiesPath),
+                'file_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
+            ]);
+            throw new \RuntimeException('Cookies file is invalid');
+        }
+        
+        // Check if cookies file contains instagram.com
+        $cookiesContent = @file_get_contents($cookiesPath);
+        if ($cookiesContent && !str_contains($cookiesContent, 'instagram.com')) {
+            Log::warning('Cookies file does not contain instagram.com', [
+                'cookies_path' => $cookiesPath,
+            ]);
+        }
+        
         // Try image format first (for image posts)
         $arguments = [
             $this->ytDlpPath,
@@ -938,17 +979,47 @@ class YtDlpService
         try {
             $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
             
-            // Filter to only return image files (exclude videos)
+            // Separate images and videos
             $imageFiles = array_filter($downloadedFiles, function($file) {
                 return $this->isImage($file);
             });
+            $videoFiles = array_filter($downloadedFiles, function($file) {
+                return $this->isVideo($file);
+            });
             
-            if (!empty($imageFiles)) {
-                return array_values($imageFiles);
+            // If we have both, prefer the primary type based on URL
+            if (!empty($imageFiles) && !empty($videoFiles)) {
+                // Check URL to determine primary type
+                if (str_contains($url, '/reel/')) {
+                    // Reel is usually video
+                    Log::info('Both images and videos downloaded from reel, preferring videos', [
+                        'url' => $url,
+                        'images_count' => count($imageFiles),
+                        'videos_count' => count($videoFiles),
+                    ]);
+                    return array_values($videoFiles);
+                } elseif (str_contains($url, '/p/')) {
+                    // Post can be either, prefer images if more images
+                    if (count($imageFiles) >= count($videoFiles)) {
+                        Log::info('Both images and videos downloaded from post, preferring images', [
+                            'url' => $url,
+                            'images_count' => count($imageFiles),
+                            'videos_count' => count($videoFiles),
+                        ]);
+                        return array_values($imageFiles);
+                    } else {
+                        Log::info('Both images and videos downloaded from post, preferring videos', [
+                            'url' => $url,
+                            'images_count' => count($imageFiles),
+                            'videos_count' => count($videoFiles),
+                        ]);
+                        return array_values($videoFiles);
+                    }
+                }
             }
             
-            // If no images found, return all files (fallback)
-            return $downloadedFiles;
+            // Return what we have
+            return !empty($imageFiles) ? array_values($imageFiles) : (!empty($videoFiles) ? array_values($videoFiles) : $downloadedFiles);
         } catch (\Exception $e) {
             // If image format fails, try video format
             if (str_contains(strtolower($e->getMessage()), 'no video formats') || 
