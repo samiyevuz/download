@@ -72,17 +72,38 @@ class TelegramWebhookController extends Controller
     private function checkSubscription(int|string $userId, string $language = 'en'): bool
     {
         // Check if channel subscription is required
+        $requiredChannels = config('telegram.required_channels');
         $channelId = config('telegram.required_channel_id');
         $channelUsername = config('telegram.required_channel_username');
 
+        // Debug logging
+        Log::debug('Checking subscription', [
+            'user_id' => $userId,
+            'required_channels' => $requiredChannels,
+            'channel_id' => $channelId,
+            'channel_username' => $channelUsername,
+        ]);
+
         // If no channel is configured, allow access
-        if (empty($channelId) && empty($channelUsername)) {
+        if (empty($requiredChannels) && empty($channelId) && empty($channelUsername)) {
+            Log::debug('No channels configured, allowing access');
             return true;
         }
 
         // Check membership
-        if (!$this->telegramService->checkChannelMembership($userId)) {
+        $isMember = $this->telegramService->checkChannelMembership($userId);
+        
+        Log::debug('Channel membership check result', [
+            'user_id' => $userId,
+            'is_member' => $isMember,
+        ]);
+
+        if (!$isMember) {
             // Send subscription required message
+            Log::info('User not subscribed, sending subscription required message', [
+                'user_id' => $userId,
+                'language' => $language,
+            ]);
             $this->telegramService->sendSubscriptionRequiredMessage($userId, $language);
             return false;
         }

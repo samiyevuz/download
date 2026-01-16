@@ -350,6 +350,14 @@ class TelegramService
         
         // Check for multiple channels (comma-separated)
         $requiredChannels = config('telegram.required_channels');
+        
+        // Debug logging
+        Log::debug('Getting required channels', [
+            'required_channels_config' => $requiredChannels,
+            'required_channel_id' => config('telegram.required_channel_id'),
+            'required_channel_username' => config('telegram.required_channel_username'),
+        ]);
+        
         if (!empty($requiredChannels)) {
             $channelList = explode(',', $requiredChannels);
             foreach ($channelList as $channel) {
@@ -371,6 +379,8 @@ class TelegramService
                 $channels[] = ltrim($channelUsername, '@');
             }
         }
+        
+        Log::debug('Required channels result', ['channels' => $channels]);
         
         return $channels;
     }
