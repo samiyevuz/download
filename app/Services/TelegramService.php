@@ -441,10 +441,12 @@ class TelegramService
                     if (str_contains($responseBody, 'bot is not a member') || 
                         str_contains($responseBody, 'chat not found') ||
                         str_contains($responseBody, 'not enough rights') ||
-                        str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER')) {
+                        str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
+                        str_contains($responseBody, 'CHAT_ADMIN_REQUIRED')) {
                         Log::error('Bot cannot check channel membership - bot must be admin of the channel', [
                             'channel' => $channel,
                             'error' => $responseBody,
+                            'solution' => 'Add bot as administrator to the channel with "View Members" permission',
                         ]);
                     }
                     
