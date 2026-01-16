@@ -922,6 +922,7 @@ class YtDlpService
 
         // Method 2: Try with --dump-json to extract image URLs directly
         // This is the most reliable method for Instagram images
+        // Use --ignore-errors to get JSON even if "No video formats" error occurs
         try {
             $jsonArguments = [
                 $this->ytDlpPath,
@@ -929,6 +930,7 @@ class YtDlpService
                 '--no-playlist',
                 '--no-warnings',
                 '--quiet',
+                '--ignore-errors',
                 '--cookies', $cookiesPath,
                 '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                 '--referer', 'https://www.instagram.com/',
@@ -944,79 +946,126 @@ class YtDlpService
             try {
                 $jsonProcess->run();
                 
-                if ($jsonProcess->isSuccessful()) {
-                    $jsonOutput = $jsonProcess->getOutput();
-                    $mediaInfo = json_decode($jsonOutput, true);
+                // Even if process reports failure, try to parse JSON from output
+                // Instagram image posts often return "No video formats" but still provide JSON
+                $jsonOutput = $jsonProcess->getOutput();
+                $errorOutput = $jsonProcess->getErrorOutput();
+                
+                // Try to extract JSON from output (might be mixed with errors)
+                $jsonLines = explode("\n", $jsonOutput);
+                $jsonData = null;
+                
+                // Look for JSON object in output lines
+                foreach ($jsonLines as $line) {
+                    $line = trim($line);
+                    if (empty($line)) continue;
                     
-                    if ($mediaInfo && is_array($mediaInfo)) {
-                        // Try to extract image URLs from JSON
-                        $imageUrls = [];
-                        
-                        // Check for thumbnail
-                        if (!empty($mediaInfo['thumbnail'])) {
-                            $imageUrls[] = $mediaInfo['thumbnail'];
+                    // Check if line starts with { (JSON object)
+                    if (str_starts_with($line, '{')) {
+                        $decoded = json_decode($line, true);
+                        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                            $jsonData = $decoded;
+                            break;
                         }
-                        
-                        // Check for thumbnails array
-                        if (!empty($mediaInfo['thumbnails']) && is_array($mediaInfo['thumbnails'])) {
-                            foreach ($mediaInfo['thumbnails'] as $thumb) {
-                                if (!empty($thumb['url'])) {
-                                    $imageUrls[] = $thumb['url'];
-                                }
+                    }
+                }
+                
+                // If no JSON found in output, try parsing entire output
+                if ($jsonData === null && !empty($jsonOutput)) {
+                    $decoded = json_decode($jsonOutput, true);
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                        $jsonData = $decoded;
+                    }
+                }
+                
+                if ($jsonData && is_array($jsonData)) {
+                    Log::debug('JSON extracted from yt-dlp output', [
+                        'url' => $url,
+                        'has_thumbnail' => !empty($jsonData['thumbnail']),
+                        'has_url' => !empty($jsonData['url']),
+                        'has_formats' => !empty($jsonData['formats']),
+                    ]);
+                    
+                    // Try to extract image URLs from JSON
+                    $imageUrls = [];
+                    
+                    // Check for thumbnail
+                    if (!empty($jsonData['thumbnail'])) {
+                        $imageUrls[] = $jsonData['thumbnail'];
+                    }
+                    
+                    // Check for thumbnails array
+                    if (!empty($jsonData['thumbnails']) && is_array($jsonData['thumbnails'])) {
+                        foreach ($jsonData['thumbnails'] as $thumb) {
+                            if (!empty($thumb['url'])) {
+                                $imageUrls[] = $thumb['url'];
                             }
                         }
-                        
-                        // Check for url (direct image URL)
-                        if (!empty($mediaInfo['url']) && $this->isImageUrl($mediaInfo['url'])) {
-                            $imageUrls[] = $mediaInfo['url'];
+                    }
+                    
+                    // Check for url (direct image URL)
+                    if (!empty($jsonData['url'])) {
+                        // Check if it's an image URL or try to use it anyway
+                        if ($this->isImageUrl($jsonData['url']) || empty($jsonData['vcodec'])) {
+                            $imageUrls[] = $jsonData['url'];
                         }
-                        
-                        // Check for formats array
-                        if (!empty($mediaInfo['formats']) && is_array($mediaInfo['formats'])) {
-                            foreach ($mediaInfo['formats'] as $format) {
-                                if (!empty($format['url']) && $this->isImageUrl($format['url'])) {
+                    }
+                    
+                    // Check for formats array
+                    if (!empty($jsonData['formats']) && is_array($jsonData['formats'])) {
+                        foreach ($jsonData['formats'] as $format) {
+                            if (!empty($format['url'])) {
+                                // Prefer image formats, but also check if vcodec is none
+                                if ($this->isImageUrl($format['url']) || 
+                                    (empty($format['vcodec']) || $format['vcodec'] === 'none')) {
                                     $imageUrls[] = $format['url'];
                                 }
                             }
                         }
-                        
-                        // Download images from extracted URLs
-                        if (!empty($imageUrls)) {
-                            $downloadedFiles = [];
-                            foreach (array_unique($imageUrls) as $imageUrl) {
-                                try {
-                                    $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
-                                    if ($imagePath && file_exists($imagePath)) {
-                                        $downloadedFiles[] = $imagePath;
-                                    }
-                                } catch (\Exception $e) {
-                                    Log::debug('Failed to download image from extracted URL', [
-                                        'url' => $imageUrl,
-                                        'error' => $e->getMessage(),
-                                    ]);
+                    }
+                    
+                    // Download images from extracted URLs
+                    if (!empty($imageUrls)) {
+                        $downloadedFiles = [];
+                        foreach (array_unique($imageUrls) as $imageUrl) {
+                            try {
+                                $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
+                                if ($imagePath && file_exists($imagePath)) {
+                                    $downloadedFiles[] = $imagePath;
                                 }
-                            }
-                            
-                            if (!empty($downloadedFiles)) {
-                                Log::info('Instagram image downloaded via JSON extraction', [
-                                    'url' => $url,
-                                    'files_count' => count($downloadedFiles),
+                            } catch (\Exception $e) {
+                                Log::debug('Failed to download image from extracted URL', [
+                                    'url' => $imageUrl,
+                                    'error' => $e->getMessage(),
                                 ]);
-                                return array_values($downloadedFiles);
                             }
                         }
+                        
+                        if (!empty($downloadedFiles)) {
+                            Log::info('Instagram image downloaded via JSON extraction', [
+                                'url' => $url,
+                                'files_count' => count($downloadedFiles),
+                            ]);
+                            return array_values($downloadedFiles);
+                        }
+                    } else {
+                        Log::debug('No image URLs found in JSON', [
+                            'url' => $url,
+                            'json_keys' => array_keys($jsonData),
+                        ]);
                     }
                 } else {
                     // Log error for debugging
-                    $errorOutput = $jsonProcess->getErrorOutput();
-                    Log::debug('JSON extraction method failed', [
+                    Log::debug('JSON extraction failed - no valid JSON in output', [
                         'url' => $url,
                         'exit_code' => $jsonProcess->getExitCode(),
-                        'error' => substr($errorOutput, 0, 500),
+                        'output_length' => strlen($jsonOutput),
+                        'error_length' => strlen($errorOutput),
+                        'error_preview' => substr($errorOutput, 0, 200),
                     ]);
                 }
             } catch (\Exception $e) {
-                Log::debug('JSON extraction method failed, trying direct download', [
+                Log::debug('JSON extraction method exception', [
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
