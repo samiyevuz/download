@@ -4,88 +4,114 @@ echo "🍪 Instagram Cookies Sozlash"
 echo "=============================="
 echo ""
 
-# 1. Cookies papkasini yaratish
-echo "1️⃣ Cookies papkasini yaratish..."
-COOKIES_DIR="/var/www/sardor/data/www/download.e-qarz.uz/storage/app/cookies"
-mkdir -p "$COOKIES_DIR"
-chmod 755 "$COOKIES_DIR"
-echo "✅ Papka yaratildi: $COOKIES_DIR"
+cd ~/www/download.e-qarz.uz
+
+# 1. Cookies faylini tekshirish
+echo "1️⃣ Cookies faylini tekshirish..."
+COOKIES_FILE="storage/app/cookies/instagram_cookies.txt"
+COOKIES_FULL_PATH="$(pwd)/$COOKIES_FILE"
+
+if [ ! -f "$COOKIES_FILE" ]; then
+    echo "❌ Cookies fayli topilmadi: $COOKIES_FILE"
+    echo "   📝 Faylni yuklang yoki yarating"
+    exit 1
+fi
+
+COOKIES_SIZE=$(du -h "$COOKIES_FILE" | cut -f1)
+echo "✅ Cookies fayli mavjud: $COOKIES_FILE"
+echo "   📝 Fayl hajmi: $COOKIES_SIZE"
 echo ""
 
-# 2. .env faylini tekshirish
-echo "2️⃣ .env faylini tekshirish..."
+# 2. Cookies fayli tarkibini tekshirish
+echo "2️⃣ Cookies fayli tarkibini tekshirish..."
+if grep -q "instagram.com" "$COOKIES_FILE" 2>/dev/null; then
+    echo "   ✅ instagram.com topildi"
+    INSTAGRAM_LINES=$(grep -c "instagram.com" "$COOKIES_FILE" 2>/dev/null || echo "0")
+    echo "   📝 Instagram cookies qatorlari: $INSTAGRAM_LINES"
+else
+    echo "   ⚠️  instagram.com topilmadi!"
+    echo "   ⚠️  Cookies fayli noto'g'ri formatda bo'lishi mumkin"
+fi
+
+if grep -q "sessionid" "$COOKIES_FILE" 2>/dev/null; then
+    echo "   ✅ sessionid cookie topildi (muhim)"
+else
+    echo "   ❌ sessionid cookie topilmadi (MUHIM!)"
+    echo "   ⚠️  Cookies faylida sessionid bo'lishi kerak"
+fi
+
+if grep -q "csrftoken" "$COOKIES_FILE" 2>/dev/null; then
+    echo "   ✅ csrftoken cookie topildi"
+else
+    echo "   ⚠️  csrftoken cookie topilmadi"
+fi
+echo ""
+
+# 3. .env faylini yangilash
+echo "3️⃣ .env faylini yangilash..."
 if grep -q "INSTAGRAM_COOKIES_PATH" .env 2>/dev/null; then
-    echo "✅ INSTAGRAM_COOKIES_PATH allaqachon mavjud"
-    grep "INSTAGRAM_COOKIES_PATH" .env
+    # Update existing path
+    sed -i "s|^INSTAGRAM_COOKIES_PATH=.*|INSTAGRAM_COOKIES_PATH=$COOKIES_FULL_PATH|" .env
+    echo "✅ .env faylda path yangilandi"
+    echo "   Path: $COOKIES_FULL_PATH"
 else
-    echo "⚠️  INSTAGRAM_COOKIES_PATH yo'q"
-    echo ""
-    echo "📝 .env fayliga qo'shing:"
-    echo "INSTAGRAM_COOKIES_PATH=$COOKIES_DIR/instagram_cookies.txt"
-    echo ""
-    read -p ".env faylga qo'shish kerakmi? (y/n): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "INSTAGRAM_COOKIES_PATH=$COOKIES_DIR/instagram_cookies.txt" >> .env
-        echo "✅ .env faylga qo'shildi"
-    fi
+    echo "INSTAGRAM_COOKIES_PATH=$COOKIES_FULL_PATH" >> .env
+    echo "✅ .env faylga path qo'shildi"
+    echo "   Path: $COOKIES_FULL_PATH"
 fi
 echo ""
 
-# 3. Ko'rsatmalar
-echo "3️⃣ Ko'rsatmalar:"
-echo "-----------------------------------"
-echo "1. Chrome/Edge da Instagram.com ga login qiling"
-echo "2. Extension o'rnating: Get cookies.txt"
-echo "   https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
-echo "3. Extension orqali cookies.txt ni saqlang"
-echo "4. Fayl nomini o'zgartiring: instagram_cookies.txt"
-echo "5. Serverga yuklang: $COOKIES_DIR/instagram_cookies.txt"
-echo ""
-echo "Yoki:"
-echo "6. Browser DevTools (F12) > Application > Cookies > instagram.com"
-echo "7. Barcha cookies ni copy qiling"
-echo "8. cookies.txt formatiga convert qiling"
-echo "9. Serverga yuklang"
+# 4. Config yangilash
+echo "4️⃣ Config yangilash..."
+php artisan config:clear
+php artisan config:cache
+echo "✅ Config yangilandi"
 echo ""
 
-# 4. Tekshirish
-echo "4️⃣ Tekshirish..."
-if [ -f "$COOKIES_DIR/instagram_cookies.txt" ]; then
-    echo "✅ Cookies fayli mavjud: $COOKIES_DIR/instagram_cookies.txt"
-    chmod 600 "$COOKIES_DIR/instagram_cookies.txt"
-    echo "✅ Permissions o'rnatildi (600)"
-    
-    # Fayl hajmini ko'rsatish
-    SIZE=$(ls -lh "$COOKIES_DIR/instagram_cookies.txt" | awk '{print $5}')
-    echo "   Fayl hajmi: $SIZE"
-    
-    # Bir nechta cookie bor-yo'qligini tekshirish
-    COOKIE_COUNT=$(grep -c "^" "$COOKIES_DIR/instagram_cookies.txt" 2>/dev/null || echo "0")
-    echo "   Qatorlar soni: $COOKIE_COUNT"
+# 5. Cookies faylini to'liq tekshirish
+echo "5️⃣ Cookies faylini to'liq tekshirish..."
+chmod +x CHECK_INSTAGRAM_COOKIES.sh
+./CHECK_INSTAGRAM_COOKIES.sh
+echo ""
+
+# 6. Workerlarni qayta ishga tushirish
+echo "6️⃣ Workerlarni qayta ishga tushirish..."
+pkill -9 -f "artisan queue:work" 2>/dev/null
+sleep 2
+
+nohup php artisan queue:work redis --queue=downloads --tries=2 --timeout=60 > storage/logs/queue-downloads.log 2>&1 &
+DOWNLOAD_PID=$!
+
+nohup php artisan queue:work redis --queue=telegram --tries=3 --timeout=10 > storage/logs/queue-telegram.log 2>&1 &
+TELEGRAM_PID=$!
+
+sleep 3
+echo "✅ Workerlarni ishga tushirdim (PIDs: $DOWNLOAD_PID, $TELEGRAM_PID)"
+echo ""
+
+# 7. Tekshirish
+echo "7️⃣ Workerlarni tekshirish..."
+WORKERS=$(ps aux | grep "artisan queue:work redis" | grep -v grep | grep -v "datacollector" | wc -l)
+if [ "$WORKERS" -ge 2 ]; then
+    echo "✅ $WORKERS worker ishlayapti"
+    ps aux | grep "artisan queue:work redis" | grep -v grep | grep -v "datacollector" | awk '{print "   PID:", $2, "Queue:", $NF}'
 else
-    echo "⚠️  Cookies fayli hali mavjud emas"
-    echo "   Yuqoridagi ko'rsatmalarga amal qiling"
+    echo "⚠️  Faqat $WORKERS worker ishlayapti"
 fi
 echo ""
 
-# 5. .gitignore ga qo'shish
-echo "5️⃣ .gitignore ni tekshirish..."
-if grep -q "storage/app/cookies" .gitignore 2>/dev/null; then
-    echo "✅ Cookies papkasi .gitignore da mavjud"
-else
-    echo "# Instagram cookies" >> .gitignore
-    echo "/storage/app/cookies" >> .gitignore
-    echo "✅ .gitignore ga qo'shildi"
-fi
+echo "===================================="
+echo "✅ Tugadi!"
 echo ""
-
-echo "============================================"
-echo "✅ Sozlash tugadi!"
+echo "📝 Sozlash yakunlandi:"
+echo "   ✅ Cookies fayli tekshirildi"
+echo "   ✅ .env fayli yangilandi"
+echo "   ✅ Config yangilandi"
+echo "   ✅ Workerlarni qayta ishga tushirdim"
 echo ""
-echo "📱 Keyingi qadamlar:"
-echo "   1. Cookies faylini yuklang: $COOKIES_DIR/instagram_cookies.txt"
-echo "   2. Config yangilang: php artisan config:clear && php artisan config:cache"
-echo "   3. Botga Instagram link yuborib test qiling!"
+echo "🧪 Test qiling:"
+echo "   1. Botga Instagram link yuboring"
+echo "   2. Loglarni kuzatib boring:"
+echo "      tail -f storage/logs/queue-downloads.log"
+echo "      tail -f storage/logs/laravel.log"
 echo ""
-echo "🎉 Cookies bilan Instagram yuklab olish 99% ishonchli!"
