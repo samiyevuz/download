@@ -165,8 +165,17 @@ class TelegramWebhookController extends Controller
             // Check if language is already selected
             $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
             
+            Log::info('Handling /start command', [
+                'chat_id' => $chatId,
+                'selected_language' => $selectedLanguage,
+            ]);
+            
             if ($selectedLanguage) {
                 // Language already selected, send welcome message in selected language
+                Log::info('Language already selected, sending welcome message', [
+                    'chat_id' => $chatId,
+                    'language' => $selectedLanguage,
+                ]);
                 try {
                     \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
                 } catch (\Exception $e) {
@@ -180,12 +189,19 @@ class TelegramWebhookController extends Controller
                 }
             } else {
                 // Send language selection keyboard
+                Log::info('No language selected, sending language selection', [
+                    'chat_id' => $chatId,
+                ]);
                 try {
                     \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                    Log::info('Language selection job dispatched', [
+                        'chat_id' => $chatId,
+                    ]);
                 } catch (\Exception $e) {
-                    Log::warning('Failed to dispatch language selection job', [
+                    Log::error('Failed to dispatch language selection job', [
                         'chat_id' => $chatId,
                         'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
                     ]);
                     // Fallback: send simple welcome message
                     $welcomeMessage = "Welcome.\nSend an Instagram or TikTok link.";
