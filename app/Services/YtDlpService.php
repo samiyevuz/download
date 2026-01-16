@@ -53,6 +53,23 @@ class YtDlpService
 
             // Check if this is an Instagram URL and use enhanced method
             if ($this->isInstagramUrl($url)) {
+                // First, try to get media info to determine if it's an image post
+                try {
+                    $mediaInfo = $this->getMediaInfo($url);
+                    $isImagePost = $this->isImagePost($mediaInfo);
+                    
+                    if ($isImagePost) {
+                        // For image posts, use image-specific format
+                        return $this->downloadInstagramImage($url, $outputDir);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to get media info, using default method', [
+                        'url' => $url,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+                
+                // Default Instagram download method
                 return $this->downloadInstagram($url, $outputDir);
             }
 
@@ -376,19 +393,27 @@ class YtDlpService
     public function getMediaInfo(string $url): array
     {
         try {
+            $cookiesPath = config('telegram.instagram_cookies_path');
             $arguments = [
                 $this->ytDlpPath,
                 '--dump-json',
                 '--no-playlist',
                 '--no-warnings',
                 '--quiet',
-                $url, // URL is already validated and sanitized
             ];
+            
+            // Add cookies if available
+            if ($cookiesPath && file_exists($cookiesPath)) {
+                $arguments[] = '--cookies';
+                $arguments[] = $cookiesPath;
+            }
+            
+            $arguments[] = $url; // URL is already validated and sanitized
 
             $process = new Process($arguments);
             $process->setTimeout(30);
             $process->setIdleTimeout(30);
-            $process->setEnv([]);
+            $process->setEnv(['PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin']);
 
             try {
                 $process->run();
@@ -420,6 +445,121 @@ class YtDlpService
             ]);
             throw $e;
         }
+    }
+    
+    /**
+     * Check if Instagram post is an image post (not video)
+     *
+     * @param array $mediaInfo
+     * @return bool
+     */
+    private function isImagePost(array $mediaInfo): bool
+    {
+        // Check if there are video formats
+        $hasVideoFormats = !empty($mediaInfo['formats']) && 
+            array_filter($mediaInfo['formats'], function($format) {
+                return isset($format['vcodec']) && $format['vcodec'] !== 'none';
+            });
+        
+        // Check if it's a carousel (multiple images)
+        $isCarousel = isset($mediaInfo['_type']) && $mediaInfo['_type'] === 'playlist';
+        
+        // If no video formats and not a video, it's likely an image
+        if (!$hasVideoFormats && !isset($mediaInfo['format_id'])) {
+            return true;
+        }
+        
+        // Check ext in info
+        if (isset($mediaInfo['ext']) && in_array(strtolower($mediaInfo['ext']), ['jpg', 'jpeg', 'png', 'webp'])) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Download Instagram image post (specific method for images)
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImage(string $url, string $outputDir): array
+    {
+        $cookiesPath = config('telegram.instagram_cookies_path');
+        
+        // Method 1: Try with cookies
+        if ($cookiesPath && file_exists($cookiesPath)) {
+            try {
+                return $this->downloadInstagramImageWithCookies($url, $outputDir, $cookiesPath);
+            } catch (\Exception $e) {
+                Log::warning('Instagram image download with cookies failed, trying fallback', [
+                    'url' => $url,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+        
+        // Method 2: Try without cookies
+        return $this->downloadInstagramImageWithoutCookies($url, $outputDir);
+    }
+    
+    /**
+     * Download Instagram image with cookies
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @param string $cookiesPath
+     * @return array
+     */
+    private function downloadInstagramImageWithCookies(string $url, string $outputDir, string $cookiesPath): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--cookies', $cookiesPath,
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            $url,
+        ];
+
+        return $this->executeDownload($arguments, $url, $outputDir);
+    }
+    
+    /**
+     * Download Instagram image without cookies
+     *
+     * @param string $url
+     * @param string $outputDir
+     * @return array
+     */
+    private function downloadInstagramImageWithoutCookies(string $url, string $outputDir): array
+    {
+        $arguments = [
+            $this->ytDlpPath,
+            '--no-playlist',
+            '--no-warnings',
+            '--quiet',
+            '--no-progress',
+            '--ignore-errors',
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--referer', 'https://www.instagram.com/',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            '--output', $outputDir . '/%(title)s.%(ext)s',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
+            $url,
+        ];
+
+        return $this->executeDownload($arguments, $url, $outputDir);
     }
 
     /**
@@ -581,7 +721,7 @@ class YtDlpService
      */
     private function downloadInstagramAlternative(string $url, string $outputDir): array
     {
-        // Try with minimal arguments - sometimes simpler is better
+        // Try with image format first
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -592,7 +732,7 @@ class YtDlpService
             '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
             '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
@@ -600,13 +740,13 @@ class YtDlpService
         try {
             return $this->executeDownload($arguments, $url, $outputDir);
         } catch (\Exception $e) {
-            Log::warning('Instagram alternative download failed, trying with different format', [
+            Log::warning('Instagram alternative download failed, trying with best format', [
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
             
-            // Try with explicit image format
-            $arguments[array_search('best', $arguments)] = 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best';
+            // Try with just 'best' format (let yt-dlp decide)
+            $arguments[array_search('best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best', $arguments)] = 'best';
             return $this->executeDownload($arguments, $url, $outputDir);
         }
     }
@@ -621,6 +761,7 @@ class YtDlpService
      */
     private function downloadWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
+        // Try image format first (for image posts)
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -629,15 +770,26 @@ class YtDlpService
             '--no-progress',
             '--ignore-errors',
             '--cookies', $cookiesPath,
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best',
             '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
 
-        return $this->executeDownload($arguments, $url, $outputDir);
+        try {
+            return $this->executeDownload($arguments, $url, $outputDir);
+        } catch (\Exception $e) {
+            // If image format fails, try video format
+            if (str_contains(strtolower($e->getMessage()), 'no video formats') || 
+                str_contains(strtolower($e->getMessage()), 'no formats found')) {
+                Log::info('Image format failed, trying video format', ['url' => $url]);
+                $arguments[array_search('best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best', $arguments)] = 'best[ext=mp4]/best[ext=webm]/best';
+                return $this->executeDownload($arguments, $url, $outputDir);
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -649,14 +801,7 @@ class YtDlpService
      */
     private function downloadWithEnhancedHeaders(string $url, string $outputDir): array
     {
-        // Try multiple user agents for better compatibility
-        $userAgents = [
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        ];
-        
-        // Try first user agent
+        // Try image format first (for image posts)
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -664,7 +809,7 @@ class YtDlpService
             '--quiet',
             '--no-progress',
             '--ignore-errors',
-            '--user-agent', $userAgents[0],
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
             '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -676,22 +821,29 @@ class YtDlpService
             '--add-header', 'Sec-Fetch-Mode:navigate',
             '--add-header', 'Sec-Fetch-Site:none',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best',
+            '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best',
             '--extractor-args', 'instagram:skip_auth=True',
-            '--no-check-certificate',
             $url,
         ];
 
         try {
             return $this->executeDownload($arguments, $url, $outputDir);
         } catch (\Exception $e) {
+            // If image format fails with "No video formats", try video-only format
+            if (str_contains(strtolower($e->getMessage()), 'no video formats') || 
+                str_contains(strtolower($e->getMessage()), 'no formats found')) {
+                Log::info('Image format failed, trying video format', ['url' => $url]);
+                $arguments[array_search('best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best', $arguments)] = 'best[ext=mp4]/best[ext=webm]/best';
+                return $this->executeDownload($arguments, $url, $outputDir);
+            }
+            
+            // Try alternative user agent
             Log::warning('Instagram download with first user agent failed, trying alternative', [
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
             
-            // Try alternative user agent
-            $arguments[array_search($userAgents[0], $arguments)] = $userAgents[1];
+            $arguments[array_search('Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1', $arguments)] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
             return $this->executeDownload($arguments, $url, $outputDir);
         }
     }
@@ -769,7 +921,9 @@ class YtDlpService
                 $errorText = strtolower($errorOutput . ' ' . $stdOutput);
                 
                 $specificError = null;
-                if (str_contains($errorText, 'private') || str_contains($errorText, 'login required')) {
+                if (str_contains($errorText, 'no video formats') && $isInstagram) {
+                    $specificError = 'Instagram rasm post - video format topilmadi, rasm format qidirilmoqda';
+                } elseif (str_contains($errorText, 'private') || str_contains($errorText, 'login required')) {
                     $specificError = 'Instagram post is private or requires login';
                 } elseif (str_contains($errorText, 'not found') || str_contains($errorText, 'unavailable')) {
                     $specificError = 'Instagram post not found or unavailable';

@@ -482,6 +482,12 @@ class DownloadMediaJob implements ShouldQueue
             (str_contains($exceptionMessage, 'login required') && str_contains($exceptionMessage, 'instagram'))) {
             return true;
         }
+        
+        // Retry "No video formats" errors - might be image post, try different format
+        if (str_contains($exceptionMessage, 'no video formats') && 
+            str_contains($exceptionMessage, 'instagram')) {
+            return true; // Retry with image format
+        }
 
         // Don't retry validation errors, invalid URLs, or content errors
         if (str_contains($exceptionMessage, 'invalid') ||
