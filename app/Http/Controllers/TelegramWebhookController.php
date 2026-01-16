@@ -354,11 +354,28 @@ class TelegramWebhookController extends Controller
             }
 
             // Check membership (only for private chats)
+            // IMPORTANT: Clear cache before checking to get fresh result
+            $cacheKey = "channel_membership_{$userId}_" . md5(implode(',', $this->telegramService->getRequiredChannels()));
+            \Illuminate\Support\Facades\Cache::forget($cacheKey);
+            
+            Log::info('Checking subscription (callback), cache cleared', [
+                'user_id' => $userId,
+                'chat_id' => $chatId,
+                'cache_key' => $cacheKey,
+            ]);
+            
             $membershipResult = $this->telegramService->checkChannelMembership($userId);
             $isMember = $membershipResult['is_member'];
             $missingChannels = $membershipResult['missing_channels'];
+            
+            Log::info('Subscription check result (callback)', [
+                'user_id' => $userId,
+                'chat_id' => $chatId,
+                'is_member' => $isMember,
+                'missing_channels' => $missingChannels,
+            ]);
 
-            // Answer callback query
+            // Answer callback query IMMEDIATELY (synchronously) for better UX
             try {
                 if ($isMember) {
                     $successMessages = [
@@ -367,19 +384,60 @@ class TelegramWebhookController extends Controller
                         'en' => '✅ Success! You have subscribed to all channels.',
                     ];
                     $text = $successMessages[$language] ?? $successMessages['en'];
-                    \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, false)->onQueue('telegram');
+                    
+                    // Answer callback query directly (synchronously) for immediate feedback
+                    try {
+                        $this->telegramService->answerCallbackQuery($callbackQueryId, $text, false);
+                        Log::info('Callback query answered successfully', [
+                            'callback_query_id' => $callbackQueryId,
+                            'user_id' => $userId,
+                            'is_member' => true,
+                        ]);
+                    } catch (\Exception $answerError) {
+                        Log::error('Failed to answer callback query directly, trying via queue', [
+                            'callback_query_id' => $callbackQueryId,
+                            'error' => $answerError->getMessage(),
+                        ]);
+                        \App\Jobs\AnswerCallbackQueryJob::dispatch($callbackQueryId, $text, false)->onQueue('telegram');
+                    }
                     
                     // Delete subscription message
                     if ($message && isset($message['message_id'])) {
-                        $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                        try {
+                            $this->telegramService->deleteMessage($chatId, $message['message_id']);
+                        } catch (\Exception $deleteError) {
+                            Log::warning('Failed to delete subscription message', [
+                                'chat_id' => $chatId,
+                                'message_id' => $message['message_id'],
+                                'error' => $deleteError->getMessage(),
+                            ]);
+                        }
                     }
                     
                     // Check if language is already selected
                     $selectedLanguage = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", null);
                     
                     if ($selectedLanguage) {
-                        // Send welcome message in selected language
-                        \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
+                        // Send welcome message in selected language (directly for immediate response)
+                        try {
+                            $welcomeMessages = [
+                                'uz' => "Welcome.\nSend an Instagram or TikTok link.",
+                                'ru' => "Welcome.\nSend an Instagram or TikTok link.",
+                                'en' => "Welcome.\nSend an Instagram or TikTok link.",
+                            ];
+                            $welcomeMessage = $welcomeMessages[$selectedLanguage] ?? $welcomeMessages['en'];
+                            $this->telegramService->sendMessage($chatId, $welcomeMessage);
+                            Log::info('Welcome message sent directly after subscription check', [
+                                'chat_id' => $chatId,
+                                'language' => $selectedLanguage,
+                            ]);
+                        } catch (\Exception $welcomeError) {
+                            Log::warning('Failed to send welcome message directly, trying via queue', [
+                                'chat_id' => $chatId,
+                                'error' => $welcomeError->getMessage(),
+                            ]);
+                            \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $selectedLanguage)->onQueue('telegram');
+                        }
                     } else {
                         // Send language selection
                         \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
