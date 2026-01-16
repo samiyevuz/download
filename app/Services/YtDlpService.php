@@ -1598,6 +1598,24 @@ class YtDlpService
      */
     private function downloadInstagramVideoWithCookies(string $url, string $outputDir, string $cookiesPath): array
     {
+        // Ensure cookie path is absolute
+        if (!str_starts_with($cookiesPath, '/')) {
+            $cookiesPath = base_path($cookiesPath);
+        }
+        $cookiesPath = realpath($cookiesPath) ?: $cookiesPath;
+        
+        // Verify cookie file exists and is readable
+        if (!file_exists($cookiesPath) || !is_readable($cookiesPath)) {
+            throw new \RuntimeException("Cookie file not found or not readable: {$cookiesPath}");
+        }
+        
+        Log::debug('Using cookie file for Instagram video download', [
+            'url' => $url,
+            'cookie_path' => $cookiesPath,
+            'cookie_exists' => file_exists($cookiesPath),
+            'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
+        ]);
+        
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -1614,12 +1632,42 @@ class YtDlpService
             $url,
         ];
 
+        Log::info('Downloading Instagram video with cookies', [
+            'url' => $url,
+            'cookie_path' => basename($cookiesPath),
+            'output_dir' => $outputDir,
+        ]);
+
         $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
         
+        Log::info('Instagram video download completed', [
+            'url' => $url,
+            'downloaded_files_count' => count($downloadedFiles),
+            'downloaded_files' => array_map('basename', $downloadedFiles),
+        ]);
+        
         // Filter to only return video files (exclude images)
-        return array_filter($downloadedFiles, function($file) {
+        $videos = array_filter($downloadedFiles, function($file) {
             return $this->isVideo($file);
         });
+        
+        if (empty($videos)) {
+            Log::warning('No video files found after Instagram video download', [
+                'url' => $url,
+                'downloaded_files' => array_map('basename', $downloadedFiles),
+                'downloaded_files_extensions' => array_map(function($file) {
+                    return pathinfo($file, PATHINFO_EXTENSION);
+                }, $downloadedFiles),
+            ]);
+        } else {
+            Log::info('Instagram video files found', [
+                'url' => $url,
+                'videos_count' => count($videos),
+                'video_files' => array_map('basename', $videos),
+            ]);
+        }
+        
+        return array_values($videos);
     }
     
     /**
