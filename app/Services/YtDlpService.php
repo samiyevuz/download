@@ -445,15 +445,29 @@ class YtDlpService
         foreach ($iterator as $file) {
             if ($file->isFile()) {
                 $extension = strtolower($file->getExtension());
+                $filename = $file->getFilename();
+                
+                // Skip info files and thumbnails
+                if (in_array($extension, ['json', 'description', 'info', 'webp'])) {
+                    // Skip .webp thumbnails but allow other webp images
+                    if ($extension === 'webp' && (str_contains($filename, 'thumb') || str_contains($filename, 'thumbnail'))) {
+                        continue;
+                    }
+                }
                 
                 // Filter by extension if specified
-                if ($allowedExtensions !== null && !in_array($extension, $allowedExtensions)) {
-                    continue;
-                }
-
-                // Skip info files and thumbnails
-                if (in_array($extension, ['json', 'description', 'info'])) {
-                    continue;
+                if ($allowedExtensions !== null) {
+                    // For images, also check if file is actually an image by checking MIME type
+                    if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'])) {
+                        $mimeType = mime_content_type($file->getPathname());
+                        if (!str_starts_with($mimeType, 'image/')) {
+                            continue;
+                        }
+                    }
+                    
+                    if (!in_array($extension, $allowedExtensions)) {
+                        continue;
+                    }
                 }
 
                 $files[] = $file->getPathname();
@@ -553,9 +567,18 @@ class YtDlpService
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best',
+            '--format', 'best/bestvideo+bestaudio/best',
+            '--write-thumbnail',
+            '--skip-download', // Don't download thumbnail separately, just get it if available
             $url,
         ];
+
+        // Remove --skip-download if we want to download media
+        // Actually, we want to download, so remove that flag
+        $arguments = array_filter($arguments, function($arg) {
+            return $arg !== '--skip-download';
+        });
+        $arguments = array_values($arguments); // Re-index array
 
         return $this->executeDownload($arguments, $url, $outputDir);
     }
@@ -585,7 +608,7 @@ class YtDlpService
             '--add-header', 'Connection:keep-alive',
             '--add-header', 'Upgrade-Insecure-Requests:1',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best',
+            '--format', 'best/bestvideo+bestaudio/best',
             $url,
         ];
 
@@ -683,12 +706,38 @@ class YtDlpService
         $downloadedFiles = $this->findDownloadedFiles($outputDir);
 
         if (empty($downloadedFiles)) {
+            // Log directory contents for debugging
+            $dirContents = [];
+            if (is_dir($outputDir)) {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($outputDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($iterator as $file) {
+                    if ($file->isFile()) {
+                        $dirContents[] = [
+                            'name' => $file->getFilename(),
+                            'extension' => $file->getExtension(),
+                            'size' => $file->getSize(),
+                            'path' => $file->getPathname(),
+                        ];
+                    }
+                }
+            }
+            
+            Log::error('No files were downloaded', [
+                'url' => $url,
+                'output_dir' => $outputDir,
+                'directory_contents' => $dirContents,
+            ]);
+            
             throw new \RuntimeException('No files were downloaded');
         }
 
         Log::info('Download completed', [
             'url' => $url,
             'files_count' => count($downloadedFiles),
+            'files' => array_map('basename', $downloadedFiles),
         ]);
 
         return $downloadedFiles;

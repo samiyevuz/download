@@ -172,13 +172,37 @@ class DownloadMediaJob implements ShouldQueue
 
             // Send images
             if (!empty($images)) {
+                Log::info('Sending images to user', [
+                    'chat_id' => $this->chatId,
+                    'images_count' => count($images),
+                    'image_paths' => array_map('basename', $images),
+                ]);
+                
                 // If multiple images, send as media group (max 10)
                 if (count($images) > 1) {
-                    $telegramService->sendMediaGroup(
+                    $success = $telegramService->sendMediaGroup(
                         $this->chatId,
                         array_slice($images, 0, 10),
                         $caption
                     );
+                    
+                    if (!$success) {
+                        Log::warning('Failed to send media group, trying individual photos', [
+                            'chat_id' => $this->chatId,
+                            'images_count' => count($images),
+                        ]);
+                        
+                        // Fallback: send images individually
+                        foreach (array_slice($images, 0, 10) as $index => $imagePath) {
+                            $photoCaption = ($index === 0) ? $caption : null;
+                            $telegramService->sendPhoto(
+                                $this->chatId,
+                                $imagePath,
+                                $photoCaption,
+                                $this->messageId
+                            );
+                        }
+                    }
                     
                     // If more than 10 images, send remaining individually
                     if (count($images) > 10) {
@@ -193,13 +217,29 @@ class DownloadMediaJob implements ShouldQueue
                     }
                 } else {
                     // Single image
-                    $telegramService->sendPhoto(
+                    $success = $telegramService->sendPhoto(
                         $this->chatId,
                         $images[0],
                         $caption,
                         $this->messageId
                     );
+                    
+                    if (!$success) {
+                        Log::error('Failed to send single photo', [
+                            'chat_id' => $this->chatId,
+                            'image_path' => $images[0],
+                            'file_exists' => file_exists($images[0]),
+                            'file_size' => file_exists($images[0]) ? filesize($images[0]) : null,
+                        ]);
+                    }
                 }
+            } else {
+                Log::warning('No images found after download', [
+                    'chat_id' => $this->chatId,
+                    'url' => $this->url,
+                    'downloaded_files' => $downloadedFiles,
+                    'videos_count' => count($videos),
+                ]);
             }
 
             // If only videos were found, that's fine
