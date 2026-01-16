@@ -468,15 +468,41 @@ class TelegramWebhookController extends Controller
                 'chat_id' => $chatId,
             ]);
 
-            // If subscribed (or in group), send welcome message
-            // IMPORTANT: Use chatId (which is now correctly set to group chat ID if in group)
+            // If subscribed (or in group), send welcome message DIRECTLY (synchronous)
+            // Using queue causes delays and reliability issues
             try {
-                \App\Jobs\SendTelegramWelcomeMessageJob::dispatch($chatId, $language)->onQueue('telegram');
+                Log::info('Sending welcome message directly', [
+                    'chat_id' => $chatId,
+                    'language' => $language,
+                ]);
+                
+                $messages = [
+                    'uz' => "Xush kelibsiz.\n\nInstagram yoki TikTok havolasini yuboring.\nMedia fayllar avtomatik tarzda yuklab beriladi.",
+                    'ru' => "Добро пожаловать.\n\nОтправьте ссылку Instagram или TikTok.\nМедиа файлы загружаются автоматически.",
+                    'en' => "Welcome.\n\nSend an Instagram or TikTok link.\nMedia files are downloaded automatically.",
+                ];
+
+                $message = $messages[$language] ?? $messages['en'];
+                $messageId = $this->telegramService->sendMessage($chatId, $message);
+                
+                if ($messageId) {
+                    Log::info('Welcome message sent successfully', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                        'message_id' => $messageId,
+                    ]);
+                } else {
+                    Log::warning('Welcome message sent but no message ID returned', [
+                        'chat_id' => $chatId,
+                        'language' => $language,
+                    ]);
+                }
             } catch (\Exception $e) {
-                Log::warning('Failed to send welcome message', [
+                Log::error('Failed to send welcome message', [
                     'chat_id' => $chatId,
                     'language' => $language,
                     'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
             }
         }
