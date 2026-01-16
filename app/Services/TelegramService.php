@@ -330,6 +330,12 @@ class TelegramService
     public function sendVideo(int|string $chatId, string $videoPath, ?string $caption = null, ?int $replyToMessageId = null): bool
     {
         try {
+            Log::info('sendVideo called', [
+                'chat_id' => $chatId,
+                'video_path' => $videoPath,
+                'file_exists' => file_exists($videoPath),
+            ]);
+            
             if (!file_exists($videoPath)) {
                 Log::error('Video file does not exist', ['path' => $videoPath]);
                 return false;
@@ -337,6 +343,14 @@ class TelegramService
 
             $fileSize = filesize($videoPath);
             $maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
+
+            Log::debug('Video file info', [
+                'chat_id' => $chatId,
+                'video_path' => $videoPath,
+                'file_size' => $fileSize,
+                'file_size_mb' => round($fileSize / 1024 / 1024, 2),
+                'max_size' => $maxFileSize,
+            ]);
 
             if ($fileSize > $maxFileSize) {
                 Log::warning('Video file too large for Telegram', [
@@ -350,6 +364,12 @@ class TelegramService
                 return false;
             }
 
+            Log::info('Sending video to Telegram', [
+                'chat_id' => $chatId,
+                'video_path' => $videoPath,
+                'file_size_mb' => round($fileSize / 1024 / 1024, 2),
+            ]);
+
             $response = Http::timeout(60)->attach(
                 'video',
                 file_get_contents($videoPath),
@@ -360,14 +380,22 @@ class TelegramService
                 'parse_mode' => 'HTML',
                 'reply_to_message_id' => $replyToMessageId,
             ]);
+            
+            Log::info('Telegram API response received', [
+                'chat_id' => $chatId,
+                'video_path' => basename($videoPath),
+                'status' => $response->status(),
+                'successful' => $response->successful(),
+            ]);
 
             if (!$response->successful()) {
                 $responseBody = $response->body();
                 $responseData = $response->json();
                 
-                Log::error('Telegram API error', [
+                Log::error('Telegram API error sending video', [
                     'method' => 'sendVideo',
                     'chat_id' => $chatId,
+                    'video_path' => basename($videoPath),
                     'status' => $response->status(),
                     'body' => $responseBody,
                     'response_data' => $responseData,
@@ -390,11 +418,18 @@ class TelegramService
                 return false;
             }
 
+            Log::info('Video sent successfully', [
+                'chat_id' => $chatId,
+                'video_path' => basename($videoPath),
+            ]);
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send Telegram video', [
                 'chat_id' => $chatId,
+                'video_path' => $videoPath,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return false;
         }
