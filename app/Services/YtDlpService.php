@@ -448,25 +448,41 @@ class YtDlpService
                 $filename = $file->getFilename();
                 
                 // Skip info files and thumbnails
-                if (in_array($extension, ['json', 'description', 'info', 'webp'])) {
-                    // Skip .webp thumbnails but allow other webp images
-                    if ($extension === 'webp' && (str_contains($filename, 'thumb') || str_contains($filename, 'thumbnail'))) {
-                        continue;
-                    }
+                if (in_array($extension, ['json', 'description', 'info'])) {
+                    continue;
+                }
+                
+                // Skip .webp thumbnails but allow other webp images
+                if ($extension === 'webp' && (str_contains(strtolower($filename), 'thumb') || str_contains(strtolower($filename), 'thumbnail'))) {
+                    continue;
                 }
                 
                 // Filter by extension if specified
                 if ($allowedExtensions !== null) {
-                    // For images, also check if file is actually an image by checking MIME type
-                    if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'])) {
-                        $mimeType = mime_content_type($file->getPathname());
-                        if (!str_starts_with($mimeType, 'image/')) {
-                            continue;
-                        }
-                    }
-                    
                     if (!in_array($extension, $allowedExtensions)) {
                         continue;
+                    }
+                    
+                    // For images, also check if file is actually an image by checking MIME type
+                    if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'])) {
+                        try {
+                            $mimeType = @mime_content_type($file->getPathname());
+                            if ($mimeType && !str_starts_with($mimeType, 'image/')) {
+                                // Skip if MIME type doesn't match (but allow if mime_content_type fails)
+                                Log::debug('Skipping file with non-image MIME type', [
+                                    'file' => $file->getFilename(),
+                                    'extension' => $extension,
+                                    'mime_type' => $mimeType,
+                                ]);
+                                continue;
+                            }
+                        } catch (\Exception $e) {
+                            // If MIME type check fails, still include the file (might be valid image)
+                            Log::debug('MIME type check failed, including file anyway', [
+                                'file' => $file->getFilename(),
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
                     }
                 }
 
@@ -565,6 +581,7 @@ class YtDlpService
      */
     private function downloadInstagramAlternative(string $url, string $outputDir): array
     {
+        // Try with minimal arguments - sometimes simpler is better
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -572,19 +589,26 @@ class YtDlpService
             '--quiet',
             '--no-progress',
             '--ignore-errors',
-            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
-            '--add-header', 'Accept-Language:en-US,en;q=0.9',
-            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            '--add-header', 'Accept-Encoding:gzip, deflate, br',
-            '--add-header', 'X-Requested-With:XMLHttpRequest',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=png]/best',
+            '--format', 'best',
             '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
 
-        return $this->executeDownload($arguments, $url, $outputDir);
+        try {
+            return $this->executeDownload($arguments, $url, $outputDir);
+        } catch (\Exception $e) {
+            Log::warning('Instagram alternative download failed, trying with different format', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Try with explicit image format
+            $arguments[array_search('best', $arguments)] = 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best';
+            return $this->executeDownload($arguments, $url, $outputDir);
+        }
     }
 
     /**
@@ -608,18 +632,10 @@ class YtDlpService
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best/bestvideo+bestaudio/best',
-            '--write-thumbnail',
-            '--skip-download', // Don't download thumbnail separately, just get it if available
+            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best',
+            '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
-
-        // Remove --skip-download if we want to download media
-        // Actually, we want to download, so remove that flag
-        $arguments = array_filter($arguments, function($arg) {
-            return $arg !== '--skip-download';
-        });
-        $arguments = array_values($arguments); // Re-index array
 
         return $this->executeDownload($arguments, $url, $outputDir);
     }
@@ -633,6 +649,14 @@ class YtDlpService
      */
     private function downloadWithEnhancedHeaders(string $url, string $outputDir): array
     {
+        // Try multiple user agents for better compatibility
+        $userAgents = [
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ];
+        
+        // Try first user agent
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -640,21 +664,36 @@ class YtDlpService
             '--quiet',
             '--no-progress',
             '--ignore-errors',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--user-agent', $userAgents[0],
             '--referer', 'https://www.instagram.com/',
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
-            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
             '--add-header', 'Accept-Encoding:gzip, deflate, br',
             '--add-header', 'DNT:1',
             '--add-header', 'Connection:keep-alive',
             '--add-header', 'Upgrade-Insecure-Requests:1',
+            '--add-header', 'Sec-Fetch-Dest:document',
+            '--add-header', 'Sec-Fetch-Mode:navigate',
+            '--add-header', 'Sec-Fetch-Site:none',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=png]/best[ext=jpeg]/best',
+            '--format', 'best[ext=mp4]/best[ext=webm]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best',
             '--extractor-args', 'instagram:skip_auth=True',
+            '--no-check-certificate',
             $url,
         ];
 
-        return $this->executeDownload($arguments, $url, $outputDir);
+        try {
+            return $this->executeDownload($arguments, $url, $outputDir);
+        } catch (\Exception $e) {
+            Log::warning('Instagram download with first user agent failed, trying alternative', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Try alternative user agent
+            $arguments[array_search($userAgents[0], $arguments)] = $userAgents[1];
+            return $this->executeDownload($arguments, $url, $outputDir);
+        }
     }
 
     /**
@@ -724,14 +763,34 @@ class YtDlpService
             if (!$process->isSuccessful()) {
                 $errorOutput = $process->getErrorOutput();
                 $stdOutput = $process->getOutput();
+                
+                // Check for specific Instagram errors
+                $isInstagram = str_contains($url, 'instagram.com');
+                $errorText = strtolower($errorOutput . ' ' . $stdOutput);
+                
+                $specificError = null;
+                if (str_contains($errorText, 'private') || str_contains($errorText, 'login required')) {
+                    $specificError = 'Instagram post is private or requires login';
+                } elseif (str_contains($errorText, 'not found') || str_contains($errorText, 'unavailable')) {
+                    $specificError = 'Instagram post not found or unavailable';
+                } elseif (str_contains($errorText, 'rate limit') || str_contains($errorText, 'too many requests')) {
+                    $specificError = 'Instagram rate limit - too many requests';
+                } elseif (str_contains($errorText, 'extractor') && $isInstagram) {
+                    $specificError = 'Instagram extractor error - API may have changed';
+                }
+                
                 Log::error('yt-dlp download failed', [
                     'url' => $url,
                     'exit_code' => $process->getExitCode(),
                     'error' => $errorOutput,
                     'output' => substr($stdOutput, 0, 500),
-                    'full_command' => implode(' ', $arguments),
+                    'full_command' => implode(' ', array_slice($arguments, 0, 5)) . '...',
+                    'is_instagram' => $isInstagram,
+                    'specific_error' => $specificError,
                 ]);
-                throw new \RuntimeException('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
+                
+                $errorMessage = $specificError ?: ('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
+                throw new \RuntimeException($errorMessage);
             }
         } catch (ProcessTimedOutException $e) {
             $this->forceKillProcess($process);
