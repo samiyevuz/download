@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Test URL from command line argument or use default
-TEST_URL="${1:-https://www.instagram.com/reel/DTi45EajDUi/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==}"
+TEST_URL="${1:-https://www.instagram.com/p/DThRA3DDLSd/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==}"
 
 echo "🧪 Instagram Media Yuklash Test"
 echo "=============================="
