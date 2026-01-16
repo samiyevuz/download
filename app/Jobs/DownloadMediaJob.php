@@ -443,10 +443,8 @@ class DownloadMediaJob implements ShouldQueue
             // Send error message to user only if we're not retrying
             if (!$shouldRetry || $this->attempts() >= $this->tries) {
                 try {
-                    // Get localized error message with more specific info for Instagram
-                    if ($isInstagram && str_contains(strtolower($errorMessage), 'rasm')) {
-                // Simple error message as per requirements
-                $errorMessage = "❌ Unable to download this content.";
+                    // Simple error message as per requirements
+                    $errorMessage = "❌ Unable to download this content.";
                     
                     $telegramService->sendMessage(
                         $this->chatId,

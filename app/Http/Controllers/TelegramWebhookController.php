@@ -208,18 +208,46 @@ class TelegramWebhookController extends Controller
 
         // Handle URL
         if ($text) {
+            // Get user's language preference
+            $language = 'en';
+            try {
+                $language = \Illuminate\Support\Facades\Cache::get("user_lang_{$chatId}", 'en');
+            } catch (\Exception $e) {
+                Log::warning('Failed to get language preference, using default', [
+                    'chat_id' => $chatId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            
             // Validate and sanitize URL
             $validatedUrl = $this->urlValidator->validateAndSanitize($text);
 
             if (!$validatedUrl) {
-                // Invalid URL - send error message
-                $errorMessage = "❌ Please send a valid Instagram or TikTok link.";
+                // Invalid URL - send error message in user's language
+                $errorMessages = [
+                    'uz' => "❌ Iltimos, to'g'ri Instagram yoki TikTok linkini yuboring.",
+                    'ru' => "❌ Пожалуйста, отправьте действительную ссылку Instagram или TikTok.",
+                    'en' => "❌ Please send a valid Instagram or TikTok link.",
+                ];
+                $errorMessage = $errorMessages[$language] ?? $errorMessages['en'];
                 $this->telegramService->sendMessage($chatId, $errorMessage, $messageId);
                 return;
             }
 
+            // Check subscription (only for private chats, skip for groups)
+            if (!$this->checkSubscription($userId, $language, $chatType)) {
+                // Subscription required message will be sent by checkSubscription
+                return;
+            }
+
             // Send "Downloading..." message IMMEDIATELY (before dispatching job)
-            $downloadingMessage = "⏳ Downloading, please wait...";
+            $downloadingMessages = [
+                'uz' => "⏳ Yuklanmoqda, iltimos kuting...",
+                'ru' => "⏳ Загрузка, пожалуйста подождите...",
+                'en' => "⏳ Downloading, please wait...",
+            ];
+            $downloadingMessage = $downloadingMessages[$language] ?? $downloadingMessages['en'];
+            
             $downloadingMessageId = $this->telegramService->sendMessage(
                 $chatId,
                 $downloadingMessage,
@@ -227,12 +255,13 @@ class TelegramWebhookController extends Controller
             );
 
             // Dispatch job to queue for async processing
-            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, 'en', $downloadingMessageId)
+            DownloadMediaJob::dispatch($chatId, $validatedUrl, $messageId, $language, $downloadingMessageId, $userId)
                 ->onQueue('downloads');
 
             Log::info('Download job dispatched', [
                 'chat_id' => $chatId,
                 'url' => $validatedUrl,
+                'language' => $language,
                 'downloading_message_id' => $downloadingMessageId,
             ]);
         }
