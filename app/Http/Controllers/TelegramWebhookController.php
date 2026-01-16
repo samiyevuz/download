@@ -162,48 +162,44 @@ class TelegramWebhookController extends Controller
 
         // Handle /start command
         if ($text === '/start') {
-            // Send language selection keyboard FIRST (before subscription check)
+            // Send language selection keyboard DIRECTLY (synchronous) for immediate response
+            // Using queue causes delays and reliability issues
             try {
-                Log::info('Dispatching language selection job', [
+                Log::info('Sending language selection directly', [
                     'chat_id' => $chatId,
                 ]);
                 
-                \App\Jobs\SendTelegramLanguageSelectionJob::dispatch($chatId)->onQueue('telegram');
+                $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
+                $keyboard = [
+                    [
+                        ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
+                    ],
+                    [
+                        ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
+                    ],
+                    [
+                        ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
+                    ],
+                ];
                 
-                Log::info('Language selection job dispatched successfully', [
-                    'chat_id' => $chatId,
-                ]);
+                $messageId = $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
+                
+                if ($messageId) {
+                    Log::info('Language selection sent successfully', [
+                        'chat_id' => $chatId,
+                        'message_id' => $messageId,
+                    ]);
+                } else {
+                    Log::warning('Language selection sent but no message ID returned', [
+                        'chat_id' => $chatId,
+                    ]);
+                }
             } catch (\Exception $e) {
-                Log::error('Failed to dispatch language selection job', [
+                Log::error('Failed to send language selection', [
                     'chat_id' => $chatId,
                     'error' => $e->getMessage(),
                     'trace' => $e->getTraceAsString(),
                 ]);
-                
-                // Fallback: send directly if job dispatch fails
-                try {
-                    $text = "🌍 Please select your language:\nВыберите язык:\nTilni tanlang:";
-                    $keyboard = [
-                        [
-                            ['text' => '🇺🇿 Oʻzbek tili', 'callback_data' => 'lang_uz'],
-                        ],
-                        [
-                            ['text' => '🇷🇺 Русский язык', 'callback_data' => 'lang_ru'],
-                        ],
-                        [
-                            ['text' => '🇬🇧 English', 'callback_data' => 'lang_en'],
-                        ],
-                    ];
-                    $this->telegramService->sendMessageWithKeyboard($chatId, $text, $keyboard);
-                    Log::info('Language selection sent directly (fallback)', [
-                        'chat_id' => $chatId,
-                    ]);
-                } catch (\Exception $fallbackError) {
-                    Log::error('Fallback language selection also failed', [
-                        'chat_id' => $chatId,
-                        'error' => $fallbackError->getMessage(),
-                    ]);
-                }
             }
             return;
         }
