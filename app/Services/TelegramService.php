@@ -757,9 +757,9 @@ class TelegramService
         }
 
         $messages = [
-            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>{$missingChannelsText}\n\nA'zo bo'ling va <b>✅ Tekshirish</b> tugmasini bosing.",
-            'ru' => "🔒 <b>Подписка на канал обязательна!</b>{$missingChannelsText}\n\nПодпишитесь и нажмите <b>✅ Проверить</b>.",
-            'en' => "🔒 <b>Channel subscription required!</b>{$missingChannelsText}\n\nSubscribe and press <b>✅ Check</b>.",
+            'uz' => "🔒 <b>Kanalga a'zo bo'lish majburiy!</b>{$missingChannelsText}\n\n📋 <b>Qanday ishlatiladi:</b>\n1. Kanallarga a'zo bo'ling\n2. <b>✅ Tekshirish</b> tugmasini bosing\n3. Instagram yoki TikTok linkini yuboring",
+            'ru' => "🔒 <b>Подписка на канал обязательна!</b>{$missingChannelsText}\n\n📋 <b>Как использовать:</b>\n1. Подпишитесь на каналы\n2. Нажмите <b>✅ Проверить</b>\n3. Отправьте ссылку Instagram или TikTok",
+            'en' => "🔒 <b>Channel subscription required!</b>{$missingChannelsText}\n\n📋 <b>How to use:</b>\n1. Subscribe to channels\n2. Press <b>✅ Check</b>\n3. Send Instagram or TikTok link",
         ];
 
         $text = $messages[$language] ?? $messages['en'];
