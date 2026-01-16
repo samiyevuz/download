@@ -187,9 +187,32 @@ class DownloadMediaJob implements ShouldQueue
             $caption = "📥 Downloaded successfully";
 
             // Send videos
+            if (!empty($videos)) {
+                Log::info('Sending videos to user', [
+                    'chat_id' => $this->chatId,
+                    'videos_count' => count($videos),
+                    'video_paths' => array_map('basename', $videos),
+                ]);
+            }
+            
             foreach ($videos as $videoPath) {
+                if (!file_exists($videoPath)) {
+                    Log::error('Video file does not exist', [
+                        'chat_id' => $this->chatId,
+                        'video_path' => $videoPath,
+                    ]);
+                    continue;
+                }
+                
                 $fileSize = filesize($videoPath);
                 $maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
+                
+                Log::info('Processing video file', [
+                    'chat_id' => $this->chatId,
+                    'video_path' => $videoPath,
+                    'file_size' => $fileSize,
+                    'file_size_mb' => round($fileSize / 1024 / 1024, 2),
+                ]);
                 
                 if ($fileSize > $maxFileSize) {
                     // Video is too large for Telegram
@@ -373,6 +396,23 @@ class DownloadMediaJob implements ShouldQueue
                 ]);
             }
 
+            // Delete "Downloading..." message after successful download
+            if ($this->downloadingMessageId !== null) {
+                try {
+                    $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
+                    Log::info('Downloading message deleted', [
+                        'chat_id' => $this->chatId,
+                        'downloading_message_id' => $this->downloadingMessageId,
+                    ]);
+                } catch (\Exception $deleteError) {
+                    Log::warning('Failed to delete downloading message', [
+                        'chat_id' => $this->chatId,
+                        'downloading_message_id' => $this->downloadingMessageId,
+                        'error' => $deleteError->getMessage(),
+                    ]);
+                }
+            }
+
             // If only videos were found, that's fine
             // If only images were found, that's fine
             // If neither, log warning
@@ -382,6 +422,15 @@ class DownloadMediaJob implements ShouldQueue
                     'url' => $this->url,
                     'files' => $downloadedFiles,
                 ]);
+                
+                // Send error message to user
+                $errorMessages = [
+                    'uz' => "❌ Media topilmadi yoki yuklab bo'lmadi.",
+                    'ru' => "❌ Медиа не найдено или не удалось загрузить.",
+                    'en' => "❌ Unable to download this content.",
+                ];
+                $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
             }
 
             // Delete "Downloading..." message after successfully sending media
