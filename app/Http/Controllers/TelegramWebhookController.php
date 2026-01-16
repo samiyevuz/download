@@ -315,6 +315,17 @@ class TelegramWebhookController extends Controller
                 return;
             }
 
+            // Clear membership cache before checking to get fresh result
+            $requiredChannels = $this->telegramService->getRequiredChannels();
+            if (!empty($requiredChannels)) {
+                $cacheKey = "channel_membership_{$userId}_" . md5(implode(',', $requiredChannels));
+                \Illuminate\Support\Facades\Cache::forget($cacheKey);
+                Log::info('Cleared membership cache before subscription check', [
+                    'user_id' => $userId,
+                    'cache_key' => $cacheKey,
+                ]);
+            }
+
             // Skip subscription check for groups/supergroups
             if (in_array($chatType, ['group', 'supergroup'])) {
                 Log::debug('Skipping subscription check for group chat in callback', [
@@ -447,6 +458,17 @@ class TelegramWebhookController extends Controller
 
             // Check subscription after language selection (only for private chats)
             // In groups, subscription check is not required
+            // Clear membership cache to get fresh result
+            $requiredChannels = $this->telegramService->getRequiredChannels();
+            if (!empty($requiredChannels)) {
+                $cacheKey = "channel_membership_{$userId}_" . md5(implode(',', $requiredChannels));
+                \Illuminate\Support\Facades\Cache::forget($cacheKey);
+                Log::debug('Cleared membership cache before subscription check after language selection', [
+                    'user_id' => $userId,
+                    'cache_key' => $cacheKey,
+                ]);
+            }
+            
             Log::info('Checking subscription after language selection', [
                 'user_id' => $userId,
                 'chat_id' => $chatId,

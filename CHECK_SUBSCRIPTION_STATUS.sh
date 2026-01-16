@@ -1,79 +1,80 @@
 #!/bin/bash
 
-echo "🔍 Majburiy a'zolik holatini tekshirish..."
+echo "🔍 Subscription Status Tekshirish"
+echo "=================================="
 echo ""
 
-cd /var/www/sardor/data/www/download.e-qarz.uz
+cd ~/www/download.e-qarz.uz
 
-# 1. .env faylini tekshirish
-echo "1️⃣ .env faylini tekshirish..."
-if grep -q "TELEGRAM_REQUIRED_CHANNELS" .env 2>/dev/null; then
-    echo "✅ TELEGRAM_REQUIRED_CHANNELS topildi:"
-    grep "TELEGRAM_REQUIRED_CHANNELS" .env
-else
-    echo "❌ TELEGRAM_REQUIRED_CHANNELS topilmadi!"
-    echo "   .env faylida quyidagilarni qo'shing:"
-    echo "   TELEGRAM_REQUIRED_CHANNELS=TheUzSoft,samiyev_blog"
-    exit 1
-fi
-echo ""
-
-# 2. Config cache'ni yangilash
-echo "2️⃣ Config cache'ni yangilash..."
-php artisan config:clear
-php artisan config:cache
-echo "✅ Config yangilandi"
-echo ""
-
-# 3. Config'da tekshirish
-echo "3️⃣ Config'da tekshirish..."
-REQUIRED_CHANNELS=$(php artisan tinker --execute="echo config('telegram.required_channels');" 2>&1 | grep -v "Psy\|tinker" | tail -1)
-echo "   Required channels: $REQUIRED_CHANNELS"
+# 1. Cache'dagi membership natijalarini ko'rish
+echo "1️⃣ Membership Cache Tekshirish..."
+USER_ID="7730989535"  # Test user ID (o'zgartiring)
+REQUIRED_CHANNELS=$(php artisan tinker --execute="echo config('telegram.required_channels');" 2>&1 | grep -v "Psy\|tinker" | tail -1 | tr -d ' ')
 
 if [ -n "$REQUIRED_CHANNELS" ] && [ "$REQUIRED_CHANNELS" != "null" ]; then
-    echo "✅ Config'da kanallar topildi"
+    CHANNELS_HASH=$(echo -n "$REQUIRED_CHANNELS" | md5sum | cut -d' ' -f1)
+    CACHE_KEY="channel_membership_${USER_ID}_${CHANNELS_HASH}"
+    
+    echo "   Cache key: $CACHE_KEY"
+    echo "   Required channels: $REQUIRED_CHANNELS"
+    
+    CACHED_VALUE=$(php artisan tinker --execute="echo json_encode(Cache::get('$CACHE_KEY'));" 2>&1 | grep -v "Psy\|tinker" | tail -1)
+    
+    if [ -n "$CACHED_VALUE" ] && [ "$CACHED_VALUE" != "null" ]; then
+        echo "   ⚠️  Cache'da natija bor: $CACHED_VALUE"
+        echo "   💡 Cache'ni tozalash: php artisan tinker --execute=\"Cache::forget('$CACHE_KEY');\""
+    else
+        echo "   ✅ Cache bo'sh (fresh check qilinadi)"
+    fi
 else
-    echo "❌ Config'da kanallar topilmadi!"
-    echo "   php artisan config:clear && php artisan config:cache qiling"
-    exit 1
+    echo "   ⚠️  Required channels sozlanmagan"
 fi
 echo ""
 
-# 4. Bot va kanal ma'lumotlarini tekshirish
-echo "4️⃣ Bot va kanal ma'lumotlarini tekshirish..."
-chmod +x TEST_CHANNEL_SUBSCRIPTION.sh
-./TEST_CHANNEL_SUBSCRIPTION.sh
-echo ""
+# 2. Required channels
+echo "2️⃣ Required Channels..."
+REQUIRED_CHANNELS=$(php artisan tinker --execute="echo config('telegram.required_channels');" 2>&1 | grep -v "Psy\|tinker" | tail -1 | tr -d ' ')
+CHANNEL_ID=$(php artisan tinker --execute="echo config('telegram.required_channel_id');" 2>&1 | grep -v "Psy\|tinker" | tail -1 | tr -d ' ')
+CHANNEL_USERNAME=$(php artisan tinker --execute="echo config('telegram.required_channel_username');" 2>&1 | grep -v "Psy\|tinker" | tail -1 | tr -d ' ')
 
-# 5. Loglarni tekshirish
-echo "5️⃣ Oxirgi loglarni tekshirish..."
-echo "   Oxirgi 20 qator log:"
-tail -20 storage/logs/laravel.log | grep -i "subscription\|channel\|checking" || echo "   Hech qanday log topilmadi"
-echo ""
-
-# 6. Workerlarni tekshirish
-echo "6️⃣ Workerlarni tekshirish..."
-WORKERS=$(ps aux | grep "artisan queue:work redis" | grep -v grep | grep -v "datacollector" | wc -l)
-if [ "$WORKERS" -ge 2 ]; then
-    echo "✅ $WORKERS worker ishlayapti"
+if [ -n "$REQUIRED_CHANNELS" ] && [ "$REQUIRED_CHANNELS" != "null" ]; then
+    echo "   ✅ Required channels: $REQUIRED_CHANNELS"
+elif [ -n "$CHANNEL_ID" ] && [ "$CHANNEL_ID" != "null" ]; then
+    echo "   ✅ Channel ID: $CHANNEL_ID"
+elif [ -n "$CHANNEL_USERNAME" ] && [ "$CHANNEL_USERNAME" != "null" ]; then
+    echo "   ✅ Channel username: $CHANNEL_USERNAME"
 else
-    echo "⚠️  Faqat $WORKERS worker ishlayapti"
-    echo "   Workerlarni qayta ishga tushiring:"
-    echo "   pkill -9 -f 'artisan queue:work' && sleep 2"
-    echo "   nohup php artisan queue:work redis --queue=downloads --tries=2 --timeout=60 > storage/logs/queue-downloads.log 2>&1 &"
-    echo "   nohup php artisan queue:work redis --queue=telegram --tries=3 --timeout=10 > storage/logs/queue-telegram.log 2>&1 &"
+    echo "   ⚠️  Hech qanday kanal sozlanmagan"
+fi
+echo ""
+
+# 3. Oxirgi loglar
+echo "3️⃣ Oxirgi Subscription Check Loglari..."
+tail -20 storage/logs/laravel.log | grep -E "Checking subscription|Channel membership check|is_member|missing_channels|Using cached" | tail -10 | sed 's/^/   /'
+echo ""
+
+# 4. Cache tozalash
+echo "4️⃣ Cache Tozalash (test uchun)..."
+read -p "   Cache'ni tozalashni xohlaysizmi? (y/n): " -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [ -n "$CACHE_KEY" ]; then
+        php artisan tinker --execute="Cache::forget('$CACHE_KEY'); echo 'Cache cleared';" 2>&1 | grep -v "Psy\|tinker" | tail -1
+        echo "   ✅ Cache tozalandi"
+    else
+        echo "   ⚠️  Cache key topilmadi"
+    fi
 fi
 echo ""
 
 echo "===================================="
 echo "✅ Tekshirish tugadi!"
 echo ""
-echo "📝 Keyingi qadamlar:"
-echo "   1. Botni kanalga admin qiling (agar admin bo'lmasa)"
-echo "   2. Botga /start yuborib test qiling"
-echo "   3. Tilni tanlang"
-echo "   4. Kanal a'zoligini tekshirish xabari ko'rinishi kerak"
-echo ""
-echo "🔍 Debug uchun:"
-echo "   tail -f storage/logs/laravel.log | grep -i 'subscription\|channel'"
+echo "💡 Subscription test qiling:"
+echo "   1. Bot'ga /start yuboring"
+echo "   2. Til tanlang"
+echo "   3. Agar kanallarga a'zo bo'lmagan bo'lsangiz, subscription message ko'rinishi kerak"
+echo "   4. Kanallarga a'zo bo'ling"
+echo "   5. ✅ Tekshirish tugmasini bosing"
+echo "   6. Cache tozalanishi kerak va yangi tekshiruv qilinishi kerak"
 echo ""
