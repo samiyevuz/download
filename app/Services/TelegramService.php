@@ -123,6 +123,7 @@ class TelegramService
             )->post("{$this->apiUrl}{$this->botToken}/sendPhoto", [
                 'chat_id' => $chatId,
                 'caption' => $caption,
+                'parse_mode' => 'HTML',
                 'reply_to_message_id' => $replyToMessageId,
             ]);
 
@@ -182,6 +183,7 @@ class TelegramService
             )->post("{$this->apiUrl}{$this->botToken}/sendVideo", [
                 'chat_id' => $chatId,
                 'caption' => $caption,
+                'parse_mode' => 'HTML',
                 'reply_to_message_id' => $replyToMessageId,
             ]);
 
@@ -248,6 +250,7 @@ class TelegramService
             $multipart = [
                 ['name' => 'chat_id', 'contents' => (string) $chatId],
                 ['name' => 'media', 'contents' => json_encode($media)],
+                ['name' => 'parse_mode', 'contents' => 'HTML'],
             ];
 
             // Add each photo file
