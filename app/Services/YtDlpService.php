@@ -3265,14 +3265,43 @@ class YtDlpService
                 return preg_match('/\.(jpg|jpeg|png|webp|gif|bmp)/i', $url);
             });
             
+            // Combine all URL sources for logging
+            $totalUrls = count($imageUrls) + count($premiumDisplayUrls) + count($premiumCandidateUrls);
+            
             Log::info('Image URLs extracted from HTML', [
                 'url' => $url,
                 'image_urls_count' => count($imageUrls),
+                'premium_display_urls_count' => count($premiumDisplayUrls),
+                'premium_candidate_urls_count' => count($premiumCandidateUrls),
+                'total_urls_count' => $totalUrls,
                 'image_urls_preview' => array_slice($imageUrls, 0, 3), // First 3 for logging
             ]);
             
-            if (empty($imageUrls)) {
-                throw new \RuntimeException('No image URLs found in HTML');
+            // Check if we have ANY URLs (from any source)
+            if (empty($imageUrls) && empty($premiumDisplayUrls) && empty($premiumCandidateUrls)) {
+                Log::warning('No image URLs found in HTML - trying fallback extraction methods', [
+                    'url' => $url,
+                    'html_length' => strlen($html),
+                ]);
+                
+                // Fallback: Try to extract ANY image URL from HTML (even with stp=)
+                // This is last resort - better to have a cropped image than none
+                if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i', $html, $fallbackMatches)) {
+                    foreach ($fallbackMatches[1] as $fallbackUrl) {
+                        $decodedFallbackUrl = html_entity_decode($fallbackUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                        if (filter_var($decodedFallbackUrl, FILTER_VALIDATE_URL)) {
+                            $imageUrls[] = $decodedFallbackUrl;
+                            Log::info('Found image URL via fallback method', [
+                                'url' => substr($decodedFallbackUrl, 0, 80) . '...',
+                            ]);
+                        }
+                    }
+                }
+                
+                // If still empty, throw exception
+                if (empty($imageUrls)) {
+                    throw new \RuntimeException('No image URLs found in HTML');
+                }
             }
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP (99%+ original)
