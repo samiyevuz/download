@@ -1895,8 +1895,8 @@ class YtDlpService
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=mp4]/best[ext=webm]/best',
-            // Try with app_id when using cookies (may help with authentication)
-            '--extractor-args', 'instagram:app_id=936619743392459',
+            // REMOVED: app_id conflicts with cookies - cookies should be sufficient
+            // Instagram requires valid cookies, app_id may interfere with cookie authentication
             $url,
         ];
         
