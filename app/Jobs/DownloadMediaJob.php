@@ -289,14 +289,6 @@ class DownloadMediaJob implements ShouldQueue
                     'images_count' => count($images),
                     'image_paths' => array_map('basename', $images),
                 ]);
-            }
-            
-            if (!empty($images)) {
-                Log::info('Sending images to user', [
-                    'chat_id' => $this->chatId,
-                    'images_count' => count($images),
-                    'image_paths' => array_map('basename', $images),
-                ]);
                 
                 // If multiple images, send as media group (max 10)
                 if (count($images) > 1) {

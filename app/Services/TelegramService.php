@@ -204,17 +204,11 @@ class TelegramService
                 }
             }
 
-            // 5. Use file handle for memory efficiency (especially for large files)
-            $fileHandle = fopen($finalPhotoPath, 'r');
-            if ($fileHandle === false) {
-                Log::error('Failed to open photo file', ['path' => $finalPhotoPath]);
-                return false;
-            }
-
+            // 5. Send photo using file_get_contents (like sendVideo)
             try {
                 $response = Http::timeout(30)->attach(
                     'photo',
-                    $fileHandle,
+                    file_get_contents($finalPhotoPath),
                     basename($finalPhotoPath)
                 )->post("{$this->apiUrl}{$this->botToken}/sendPhoto", [
                     'chat_id' => $chatId,
@@ -259,11 +253,6 @@ class TelegramService
                 
                 return true;
             } finally {
-                // Always close file handle
-                if (isset($fileHandle) && is_resource($fileHandle)) {
-                    fclose($fileHandle);
-                }
-                
                 // Clean up converted file if different from original
                 if ($finalPhotoPath !== $photoPath && file_exists($finalPhotoPath)) {
                     @unlink($finalPhotoPath);
