@@ -3335,30 +3335,37 @@ class YtDlpService
                 ]);
                 
                 // Fallback: Try to extract image URLs from HTML - prioritize scontent- URLs (real post images)
-                // CRITICAL: Skip rsrc.php/static URLs (icons/logos, not post images)
+                // CRITICAL: Skip ALL rsrc.php/static URLs (they're static icons, NEVER post images)
                 // Try multiple patterns to find actual post image URLs
                 $fallbackPatterns = [
-                    // Pattern 1: scontent- URLs (Instagram CDN for post images)
-                    '/(https?:\/\/[^"\'\s]*scontent-[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
-                    // Pattern 2: /v/t51./ or /v/t52./ or /v/t64./ URLs (Instagram image format)
-                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/v\/t\d+\.[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
-                    // Pattern 3: /scontent/ path URLs
-                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/scontent\/[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
-                    // Pattern 4: Any CDN URL with image extension (but not rsrc.php/static)
-                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                    // Pattern 1: scontent- URLs (Instagram CDN for post images) - HIGHEST PRIORITY
+                    '/(https?:\/\/[^"\'\s]*scontent-[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                    // Pattern 2: /v/t51./ or /v/t52./ or /v/t64./ URLs (Instagram image format) - HIGH PRIORITY
+                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/v\/t\d+\.[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                    // Pattern 3: /scontent/ path URLs - MEDIUM PRIORITY
+                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/scontent\/[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                    // Pattern 4: Any CDN URL with image extension - LOW PRIORITY (but SKIP rsrc.php/static)
+                    // This pattern is generic and will be filtered to exclude rsrc.php
                 ];
                 
+                // Try patterns 1-3 first (post image patterns, excluding rsrc.php)
                 foreach ($fallbackPatterns as $patternIndex => $pattern) {
+                    if ($patternIndex >= 3) {
+                        break; // Skip pattern 4 for now (generic, will handle separately)
+                    }
+                    
                     if (preg_match_all($pattern, $html, $fallbackMatches)) {
                         foreach ($fallbackMatches[1] as $fallbackUrl) {
                             $decodedFallbackUrl = html_entity_decode($fallbackUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                             
-                            // Skip ONLY very small rsrc.php icons (32x32, 64x64, 76x76) - they're not post images
-                            // Accept everything else (user requirement: download by ANY means)
-                            if (str_contains($decodedFallbackUrl, '/rsrc.php/') && 
-                                preg_match('/(32x32|64x64|76x76)/', $decodedFallbackUrl)) {
-                                // Skip only very small icons
-                                continue;
+                            // CRITICAL: Skip ALL rsrc.php URLs - they're static icons/logos, NEVER post images
+                            // rsrc.php is Instagram's static asset CDN (icons, buttons, not post content)
+                            if (str_contains($decodedFallbackUrl, '/rsrc.php/') || 
+                                str_contains($decodedFallbackUrl, 'static.cdninstagram.com')) {
+                                Log::debug('Skipping rsrc.php/static URL (static icon, not post image)', [
+                                    'url' => substr($decodedFallbackUrl, 0, 80) . '...',
+                                ]);
+                                continue; // Skip ALL rsrc.php URLs - they're not post images
                             }
                             
                             if (filter_var($decodedFallbackUrl, FILTER_VALIDATE_URL)) {
@@ -3379,8 +3386,37 @@ class YtDlpService
                         }
                         
                         // If we found URLs with pattern 1-3 (high priority patterns), stop
-                        if (!empty($imageUrls) && $patternIndex < 3) {
+                        if (!empty($imageUrls)) {
                             break;
+                        }
+                    }
+                }
+                
+                // Pattern 4: Generic CDN URL (ONLY if patterns 1-3 found nothing AND only if NOT rsrc.php)
+                if (empty($imageUrls)) {
+                    Log::debug('Patterns 1-3 found nothing - trying generic CDN pattern (excluding rsrc.php)', [
+                        'url' => $url,
+                    ]);
+                    
+                    $genericPattern = '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i';
+                    if (preg_match_all($genericPattern, $html, $genericMatches)) {
+                        foreach ($genericMatches[1] as $genericUrl) {
+                            $decodedGenericUrl = html_entity_decode($genericUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            
+                            // CRITICAL: Skip ALL rsrc.php/static URLs (they're static icons, NEVER post images)
+                            if (str_contains($decodedGenericUrl, '/rsrc.php/') || 
+                                str_contains($decodedGenericUrl, 'static.cdninstagram.com')) {
+                                continue; // Skip ALL rsrc.php/static URLs
+                            }
+                            
+                            if (filter_var($decodedGenericUrl, FILTER_VALIDATE_URL)) {
+                                $imageUrls[] = $decodedGenericUrl;
+                                Log::info('Found image URL via generic fallback pattern (excluding rsrc.php)', [
+                                    'url' => substr($decodedGenericUrl, 0, 80) . '...',
+                                    'pattern_index' => 4,
+                                ]);
+                                break; // Take first valid URL
+                            }
                         }
                     }
                 }
@@ -3407,13 +3443,12 @@ class YtDlpService
                             foreach ($ultraMatches[1] as $ultraUrl) {
                                 $decodedUltraUrl = html_entity_decode($ultraUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                                 
-                                // Still skip ONLY rsrc.php static assets (they're too small, 32x32)
-                                // But accept EVERYTHING else (crop, thumbnail, preview - anything!)
-                                if (str_contains($decodedUltraUrl, '/rsrc.php/') && 
-                                    preg_match('/(32x32|64x64|76x76)/', $decodedUltraUrl)) {
-                                    // Skip only very small icons (32x32, 64x64, 76x76 from rsrc.php)
-                                    continue;
-                                }
+                            // CRITICAL: Skip ALL rsrc.php/static URLs - they're static icons, NEVER post images
+                            // rsrc.php is Instagram's static asset CDN (icons, buttons, not post content)
+                            if (str_contains($decodedUltraUrl, '/rsrc.php/') || 
+                                str_contains($decodedUltraUrl, 'static.cdninstagram.com')) {
+                                continue; // Skip ALL rsrc.php/static URLs - they're not post images
+                            }
                                 
                                 if (filter_var($decodedUltraUrl, FILTER_VALIDATE_URL) || 
                                     str_starts_with($decodedUltraUrl, 'data:image/')) {
