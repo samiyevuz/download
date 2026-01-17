@@ -3321,8 +3321,40 @@ class YtDlpService
                 'top_3_urls_preview' => array_slice($imageUrls, 0, 3),
             ]);
             
-            // Try URLs without crop first (99%+ original), crop URLs only as last resort
-            // Priority: premium (display_url) > good (no stp=) > crop (stp=, last resort)
+            // Try URLs without crop first (99%+ original), crop URLs COMPLETELY SKIPPED
+            // Priority: premium (display_url/candidates[0]) > good (no stp=)
+            // CRITICAL: Skip any URL with stp= parameter - it causes 50%+ cropping
+            
+            // Final filter: Remove ANY URL with stp= parameter (crop parameter)
+            $imageUrls = array_filter($imageUrls, function($url) {
+                $hasCrop = str_contains($url, 'stp=');
+                if ($hasCrop) {
+                    Log::debug('Skipping URL with crop parameter (stp=) - causes 50%+ cropping', [
+                        'url' => substr($url, 0, 80) . '...',
+                    ]);
+                }
+                return !$hasCrop; // Only keep URLs without stp= parameter
+            });
+            
+            // Re-index array after filtering
+            $imageUrls = array_values($imageUrls);
+            
+            if (empty($imageUrls)) {
+                Log::error('No URLs without crop parameter (stp=) found - all URLs were cropped!', [
+                    'url' => $url,
+                    'premium_urls_count' => count($premiumUrls ?? []),
+                    'good_urls_count' => count($goodUrls ?? []),
+                ]);
+                throw new \RuntimeException('No image URLs without crop parameter found - all URLs contain stp=');
+            }
+            
+            Log::info('Final URL list after filtering crop URLs', [
+                'url' => $url,
+                'premium_urls' => count($premiumUrls ?? []),
+                'good_urls' => count($goodUrls ?? []),
+                'total_after_filter' => count($imageUrls),
+                'all_crop_urls_skipped' => true,
+            ]);
             
             $triedPremiumGood = false;
             foreach ($imageUrls as $imageUrl) {
@@ -3331,13 +3363,21 @@ class YtDlpService
                 }
                 
                 try {
+                    // At this point, imageUrl should NOT have stp= parameter (already filtered)
                     $hasCrop = str_contains($imageUrl, 'stp=');
-                    Log::info('Attempting to download image from extracted URL', [
+                    if ($hasCrop) {
+                        Log::warning('ERROR: URL with crop parameter passed filter - skipping!', [
+                            'url' => substr($imageUrl, 0, 80) . '...',
+                        ]);
+                        continue; // Safety check - skip crop URLs
+                    }
+                    
+                    Log::info('Attempting to download image from extracted URL (NO crop)', [
                         'url' => substr($imageUrl, 0, 100) . '...',
                         'attempt' => $downloadedCount + 1,
                         'total_urls' => count($imageUrls),
-                        'has_crop' => $hasCrop ? 'yes (WARNING: may crop 50%+)' : 'no (99%+ original)',
-                        'priority' => in_array($imageUrl, $premiumUrls) ? 'premium' : 'good',
+                        'has_crop' => 'no (99%+ original)',
+                        'priority' => in_array($imageUrl, $premiumUrls ?? []) ? 'premium (display_url/candidates[0])' : 'good (no stp=)',
                     ]);
                     
                     $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
@@ -3349,14 +3389,15 @@ class YtDlpService
                             $height = $imageInfo[1];
                             $fileSize = filesize($imagePath);
                             
-                            // Accept valid images, prefer larger ones (99%+ original, no crop)
+                            // Accept valid images (99%+ original, no crop - stp= already filtered out)
+                            // Prefer larger images for better quality
                             if ($width >= 200 && $height >= 200) {
-                                // If image has crop parameter (stp=), only accept if it's really large
-                                // Crop images are usually smaller due to cropping
-                                if ($hasCrop && ($width < 1080 || $height < 1080)) {
-                                    Log::warning('Rejecting cropped image (stp=) - too small, trying next URL', [
+                                // Safety check: If somehow crop parameter is still present, reject
+                                if ($hasCrop) {
+                                    Log::error('ERROR: Image downloaded with crop parameter (stp=) - rejecting!', [
                                         'dimensions' => $width . 'x' . $height,
                                         'file_path' => basename($imagePath),
+                                        'url' => substr($imageUrl, 0, 80) . '...',
                                     ]);
                                     @unlink($imagePath);
                                     continue; // Try next URL
