@@ -1765,12 +1765,33 @@ class YtDlpService
             throw new \RuntimeException("Cookie file not found or not readable: {$cookiesPath}");
         }
         
+        // Verify cookie file format (Netscape format required for yt-dlp)
+        $cookieContent = @file_get_contents($cookiesPath);
+        $isNetscapeFormat = $cookieContent && (str_starts_with($cookieContent, '# Netscape HTTP Cookie File') || preg_match('/^#(?: Netscape| HttpOnly)/m', $cookieContent));
+        $hasSessionId = $cookieContent && str_contains($cookieContent, 'sessionid');
+        
         Log::debug('Using cookie file for Instagram video download', [
             'url' => $url,
             'cookie_path' => $cookiesPath,
             'cookie_exists' => file_exists($cookiesPath),
             'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
+            'is_netscape_format' => $isNetscapeFormat,
+            'has_sessionid' => $hasSessionId,
         ]);
+        
+        // Warn if cookie file doesn't look like Netscape format
+        if (!$isNetscapeFormat) {
+            Log::warning('Cookie file may not be in Netscape format', [
+                'cookie_path' => basename($cookiesPath),
+                'first_line' => substr($cookieContent ?: '', 0, 100),
+            ]);
+        }
+        
+        if (!$hasSessionId) {
+            Log::warning('Cookie file missing sessionid (critical for Instagram authentication)', [
+                'cookie_path' => basename($cookiesPath),
+            ]);
+        }
         
         // CRITICAL: Don't use skip_auth=True when using cookies - it conflicts with cookie authentication
         // Instagram requires valid cookies, skip_auth will bypass cookie authentication
@@ -2415,14 +2436,29 @@ class YtDlpService
                     $specificError = 'Instagram extractor error - API may have changed';
                 }
                 
+                // Build full command for logging (mask sensitive data)
+                $fullCommandForLog = [];
+                foreach ($arguments as $i => $arg) {
+                    // Mask cookie paths in logs (show only basename)
+                    if ($arg === '--cookies' && isset($arguments[$i + 1])) {
+                        $fullCommandForLog[] = $arg;
+                        $fullCommandForLog[] = basename($arguments[$i + 1]) . ' (full path masked)';
+                        continue;
+                    } elseif (isset($arguments[$i - 1]) && $arguments[$i - 1] === '--cookies') {
+                        continue; // Skip cookie path (already added above)
+                    }
+                    $fullCommandForLog[] = strlen($arg) > 100 ? substr($arg, 0, 100) . '...' : $arg;
+                }
+                
                 Log::error('yt-dlp download failed', [
                     'url' => $url,
                     'exit_code' => $process->getExitCode(),
                     'error' => $errorOutput,
                     'output' => substr($stdOutput, 0, 500),
-                    'full_command' => implode(' ', array_slice($arguments, 0, 5)) . '...',
+                    'full_command' => implode(' ', $fullCommandForLog),
                     'is_instagram' => $isInstagram,
                     'specific_error' => $specificError,
+                    'cookie_used' => in_array('--cookies', $arguments),
                 ]);
                 
                 $errorMessage = $specificError ?: ('Download failed: ' . ($errorOutput ?: $stdOutput ?: 'Unknown error'));
