@@ -2592,10 +2592,14 @@ class YtDlpService
                 
                 $ch = curl_init($imageUrl);
                 
-                // Prepare curl headers (convert to array format)
+                // Prepare curl headers (convert to array format, keep Cookie header)
                 $curlHeaders = [];
+                $cookieString = '';
                 foreach ($headers as $header) {
-                    if (!str_starts_with($header, 'Cookie:')) {
+                    if (str_starts_with($header, 'Cookie:')) {
+                        // Extract cookie string from "Cookie: ..." header
+                        $cookieString = trim(substr($header, 7)); // Remove "Cookie:" prefix
+                    } else {
                         $curlHeaders[] = $header;
                     }
                 }
@@ -2610,9 +2614,20 @@ class YtDlpService
                 ]);
                 
                 // Add cookies if available (for Instagram CDN)
+                // Use cookie string from header if available, otherwise try COOKIEFILE
                 if ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
-                    curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
-                    curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
+                    if (!empty($cookieString)) {
+                        // Use parsed cookie string
+                        curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
+                        Log::debug('Using parsed cookie string for curl', [
+                            'url' => substr($imageUrl, 0, 80) . '...',
+                            'cookie_length' => strlen($cookieString),
+                        ]);
+                    } else {
+                        // Fallback: try COOKIEFILE (may not work with Netscape format)
+                        curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
+                        curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
+                    }
                 }
                 
                 $imageData = curl_exec($ch);
@@ -2950,13 +2965,32 @@ class YtDlpService
             }
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP
-            // CRITICAL: Filter out cropped/thumbnail URLs first, then sort by size
-            $imageUrls = array_filter($imageUrls, function($url) {
-                // REJECT URLs with crop parameters (stp= means cropped)
-                if (str_contains($url, 'stp=')) {
-                    return false;
+            // CRITICAL: Clean URLs - remove crop parameters and size restrictions to get full-size images
+            $imageUrls = array_map(function($url) {
+                // Parse URL to remove crop parameters
+                $parsedUrl = parse_url($url);
+                if (!isset($parsedUrl['query'])) {
+                    return $url; // No query parameters, return as is
                 }
                 
+                // Parse query string
+                parse_str($parsedUrl['query'], $queryParams);
+                
+                // Remove crop parameters that limit image size
+                unset($queryParams['stp']); // Crop parameter
+                unset($queryParams['s']); // Size parameter (e.g., s640x640)
+                
+                // Rebuild URL without crop parameters
+                $cleanQuery = http_build_query($queryParams);
+                $cleanUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'] . 
+                           (isset($parsedUrl['path']) ? $parsedUrl['path'] : '') .
+                           (!empty($cleanQuery) ? '?' . $cleanQuery : '');
+                
+                return $cleanUrl;
+            }, $imageUrls);
+            
+            // Filter out thumbnail/preview URLs
+            $imageUrls = array_filter($imageUrls, function($url) {
                 // REJECT thumbnail/preview URLs
                 if (str_contains($url, 'thumbnail') || 
                     str_contains($url, 'preview') || 
