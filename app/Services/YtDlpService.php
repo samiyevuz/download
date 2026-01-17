@@ -2574,6 +2574,7 @@ class YtDlpService
             }
             
             // Download using file_get_contents with context
+            // IMPORTANT: Use proper headers to avoid 403 errors from Instagram CDN
             $context = stream_context_create([
                 'http' => [
                     'method' => 'GET',
@@ -2581,6 +2582,7 @@ class YtDlpService
                     'timeout' => 30,
                     'follow_location' => true,
                     'max_redirects' => 5,
+                    'user_agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                 ],
             ]);
             
@@ -2604,6 +2606,14 @@ class YtDlpService
                     }
                 }
                 
+                // Add proper headers for Instagram CDN (to avoid 403 errors)
+                $curlHeaders = array_merge($curlHeaders, [
+                    'Accept: image/webp,image/apng,image/*,*/*;q=0.8',
+                    'Accept-Language: en-US,en;q=0.9',
+                    'Referer: https://www.instagram.com/',
+                    'Origin: https://www.instagram.com',
+                ]);
+                
                 curl_setopt_array($ch, [
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_FOLLOWLOCATION => true,
@@ -2611,6 +2621,8 @@ class YtDlpService
                     CURLOPT_TIMEOUT => 30,
                     CURLOPT_USERAGENT => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                     CURLOPT_HTTPHEADER => $curlHeaders,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_SSL_VERIFYHOST => false,
                 ]);
                 
                 // Add cookies if available (for Instagram CDN)
@@ -2877,15 +2889,53 @@ class YtDlpService
             }
             
             // Method 5b: Extract from window.__additionalDataLoaded JSON structure
+            // This contains the highest quality image URLs
             if (preg_match('/window\.__additionalDataLoaded\s*\([^,]+,\s*({.+?})\);/is', $html, $additionalDataMatches)) {
                 $additionalData = json_decode($additionalDataMatches[1], true);
                 if ($additionalData && is_array($additionalData)) {
-                    // Navigate through additionalData to find display_url
+                    // Navigate through additionalData to find display_url and image_versions2
                     $paths = [
-                        ['items', 0, 'image_versions2', 'candidates', 0, 'url'],
                         ['graphql', 'shortcode_media', 'display_url'],
                         ['items', 0, 'display_url'],
+                        ['items', 0, 'image_versions2', 'candidates', 0, 'url'],
                     ];
+                    
+                    // Also extract from image_versions2.candidates array (sorted by quality, first is best)
+                    $candidatePaths = [
+                        ['items', 0, 'image_versions2', 'candidates'],
+                        ['graphql', 'shortcode_media', 'display_resources'],
+                    ];
+                    
+                    foreach ($candidatePaths as $candidatePath) {
+                        $candidates = $additionalData;
+                        foreach ($candidatePath as $key) {
+                            if (is_array($candidates) && isset($candidates[$key])) {
+                                $candidates = $candidates[$key];
+                            } else {
+                                $candidates = null;
+                                break;
+                            }
+                        }
+                        
+                        // candidates is an array sorted by quality (first = best quality)
+                        if (is_array($candidates) && !empty($candidates)) {
+                            foreach ($candidates as $candidate) {
+                                if (is_array($candidate) && isset($candidate['url'])) {
+                                    $candidateUrl = $candidate['url'];
+                                    if (filter_var($candidateUrl, FILTER_VALIDATE_URL)) {
+                                        $imageUrls[] = html_entity_decode($candidateUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                        Log::debug('Found image URL from candidates array', [
+                                            'url' => substr($candidateUrl, 0, 80) . '...',
+                                            'width' => $candidate['width'] ?? 'unknown',
+                                            'height' => $candidate['height'] ?? 'unknown',
+                                        ]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Extract display_url from simple paths
                     foreach ($paths as $path) {
                         $value = $additionalData;
                         foreach ($path as $key) {
@@ -2901,6 +2951,65 @@ class YtDlpService
                             Log::debug('Found display_url from __additionalDataLoaded', [
                                 'url' => substr($value, 0, 80) . '...',
                             ]);
+                        }
+                    }
+                }
+            }
+            
+            // Method 5c: Extract from window._sharedData more thoroughly (full JSON structure)
+            // Try to find image_versions2.candidates in edge_sidecar_to_children (carousel)
+            if (preg_match('/window\._sharedData\s*=\s*({.+?});/is', $html, $sharedDataMatches)) {
+                $sharedData = json_decode($sharedDataMatches[1], true);
+                if ($sharedData && is_array($sharedData)) {
+                    // Look for display_resources (sorted by quality, first is best)
+                    $resourcePaths = [
+                        ['entry_data', 'PostPage', 0, 'graphql', 'shortcode_media', 'display_resources'],
+                        ['entry_data', 'PostPage', 0, 'graphql', 'shortcode_media', 'edge_sidecar_to_children', 'edges'],
+                    ];
+                    
+                    foreach ($resourcePaths as $resourcePath) {
+                        $resources = $sharedData;
+                        foreach ($resourcePath as $key) {
+                            if (is_array($resources) && isset($resources[$key])) {
+                                $resources = $resources[$key];
+                            } else {
+                                $resources = null;
+                                break;
+                            }
+                        }
+                        
+                        if (is_array($resources)) {
+                            // If it's edges array (carousel), iterate through nodes
+                            if (isset($resources[0]) && is_array($resources[0]) && isset($resources[0]['node'])) {
+                                foreach ($resources as $edge) {
+                                    $node = $edge['node'] ?? null;
+                                    if ($node && is_array($node)) {
+                                        // Get display_url or display_resources
+                                        if (isset($node['display_url'])) {
+                                            $imageUrls[] = $node['display_url'];
+                                        }
+                                        if (isset($node['display_resources']) && is_array($node['display_resources'])) {
+                                            foreach ($node['display_resources'] as $resource) {
+                                                if (isset($resource['src'])) {
+                                                    $imageUrls[] = $resource['src'];
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } elseif (isset($resources[0]['src'])) {
+                                // display_resources array
+                                foreach ($resources as $resource) {
+                                    if (isset($resource['src']) && filter_var($resource['src'], FILTER_VALIDATE_URL)) {
+                                        $imageUrls[] = $resource['src'];
+                                        Log::debug('Found image URL from display_resources', [
+                                            'url' => substr($resource['src'], 0, 80) . '...',
+                                            'width' => $resource['config_width'] ?? 'unknown',
+                                            'height' => $resource['config_height'] ?? 'unknown',
+                                        ]);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
