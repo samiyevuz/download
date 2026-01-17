@@ -2522,7 +2522,67 @@ class YtDlpService
     private function downloadImageFromUrl(string $imageUrl, string $outputDir, ?string $originalPostUrl = null): ?string
     {
         try {
-            // Generate unique filename
+            // Handle base64 data URLs (data:image/png;base64,...)
+            // User requirement: download image by ANY means
+            if (str_starts_with($imageUrl, 'data:image/')) {
+                Log::info('Processing base64 data URL', [
+                    'url_preview' => substr($imageUrl, 0, 100) . '...',
+                    'data_length' => strlen($imageUrl),
+                ]);
+                
+                // Parse data URL: data:image/png;base64,...
+                if (preg_match('/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/', $imageUrl, $dataMatches)) {
+                    $extension = strtolower($dataMatches[1]);
+                    if ($extension === 'jpeg') {
+                        $extension = 'jpg';
+                    }
+                    $base64Data = $dataMatches[2];
+                    
+                    // Decode base64
+                    $imageData = base64_decode($base64Data, true);
+                    if ($imageData === false) {
+                        Log::warning('Failed to decode base64 data URL', [
+                            'url_preview' => substr($imageUrl, 0, 100) . '...',
+                        ]);
+                        return null;
+                    }
+                    
+                    // Verify it's actually an image
+                    $imageInfo = @getimagesizefromstring($imageData);
+                    if ($imageInfo === false) {
+                        Log::warning('Base64 data is not a valid image', [
+                            'data_length' => strlen($imageData),
+                        ]);
+                        return null;
+                    }
+                    
+                    // Generate filename and save
+                    $filename = uniqid('img_base64_', true) . '.' . $extension;
+                    $filePath = $outputDir . '/' . $filename;
+                    
+                    if (file_put_contents($filePath, $imageData) === false) {
+                        Log::warning('Failed to save base64 image', [
+                            'file_path' => $filePath,
+                        ]);
+                        return null;
+                    }
+                    
+                    Log::info('Base64 image saved successfully', [
+                        'file_path' => basename($filePath),
+                        'dimensions' => $imageInfo[0] . 'x' . $imageInfo[1],
+                        'file_size' => strlen($imageData),
+                    ]);
+                    
+                    return $filePath;
+                } else {
+                    Log::warning('Invalid base64 data URL format', [
+                        'url_preview' => substr($imageUrl, 0, 100) . '...',
+                    ]);
+                    return null;
+                }
+            }
+            
+            // Generate unique filename for regular URLs
             $extension = 'jpg';
             if (preg_match('/\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)/i', $imageUrl, $matches)) {
                 $extension = strtolower($matches[1]);
@@ -2860,12 +2920,59 @@ class YtDlpService
                 foreach ($jsonLdMatches[1] as $jsonLdContent) {
                     $jsonData = json_decode(trim($jsonLdContent), true);
                     if ($jsonData && is_array($jsonData)) {
-                        // Look for image URLs in JSON-LD
-                        if (!empty($jsonData['image']) && is_string($jsonData['image'])) {
-                            $imageUrls[] = $jsonData['image'];
-                        } elseif (!empty($jsonData['image']) && is_array($jsonData['image'])) {
-                            if (isset($jsonData['image']['url'])) {
-                                $imageUrls[] = $jsonData['image']['url'];
+                        // Look for image URLs in JSON-LD (recursive search)
+                        $this->extractImageUrlsFromArray($jsonData, $imageUrls, $premiumDisplayUrls, $premiumCandidateUrls);
+                    }
+                }
+            }
+            
+            // Method 1b: Extract from ALL script tags with JSON content (aggressive parsing)
+            // Instagram often embeds JSON data in script tags without type="application/ld+json"
+            if (empty($imageUrls) && empty($premiumDisplayUrls) && empty($premiumCandidateUrls)) {
+                if (preg_match_all('/<script[^>]*>(.*?)<\/script>/is', $html, $allScriptMatches)) {
+                    foreach ($allScriptMatches[1] as $scriptContent) {
+                        $scriptContent = trim($scriptContent);
+                        // Skip if too short or doesn't look like JSON
+                        if (strlen($scriptContent) < 100 || !str_contains($scriptContent, '{')) {
+                            continue;
+                        }
+                        
+                        // Try to find JSON objects containing image URLs
+                        // Look for common patterns: "display_url", "image_versions2", "candidates"
+                        if (preg_match_all('/"display_url"\s*:\s*"([^"]+)"/i', $scriptContent, $displayUrlInScript)) {
+                            foreach ($displayUrlInScript[1] as $displayUrl) {
+                                $decodedUrl = html_entity_decode($displayUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                if (filter_var($decodedUrl, FILTER_VALIDATE_URL) && !str_contains($decodedUrl, '/rsrc.php/')) {
+                                    $premiumDisplayUrls[] = $decodedUrl;
+                                    Log::info('Found display_url from script tag (aggressive parsing)', [
+                                        'url' => substr($decodedUrl, 0, 80) . '...',
+                                    ]);
+                                }
+                            }
+                        }
+                        
+                        // Try to extract image_versions2.candidates[0].url
+                        if (preg_match_all('/"image_versions2"[^}]*"candidates"[^}]*\[\s*\{\s*"url"\s*:\s*"([^"]+)"/i', $scriptContent, $candidateInScript)) {
+                            foreach ($candidateInScript[1] as $candidateUrl) {
+                                $decodedUrl = html_entity_decode($candidateUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                if (filter_var($decodedUrl, FILTER_VALIDATE_URL) && !str_contains($decodedUrl, '/rsrc.php/')) {
+                                    $premiumCandidateUrls[] = $decodedUrl;
+                                    Log::info('Found candidates[0] from script tag (aggressive parsing)', [
+                                        'url' => substr($decodedUrl, 0, 80) . '...',
+                                    ]);
+                                    break; // Only take first candidate (highest quality)
+                                }
+                            }
+                        }
+                        
+                        // Try JSON decode if it looks like valid JSON
+                        if (str_starts_with($scriptContent, '{') || str_starts_with($scriptContent, '[')) {
+                            // Try to extract JSON object from script content
+                            if (preg_match('/\{[^}]*"display_url"[^}]*\}/i', $scriptContent, $jsonMatch)) {
+                                $jsonData = @json_decode($jsonMatch[0], true);
+                                if ($jsonData && is_array($jsonData)) {
+                                    $this->extractImageUrlsFromArray($jsonData, $imageUrls, $premiumDisplayUrls, $premiumCandidateUrls);
+                                }
                             }
                         }
                     }
