@@ -3206,27 +3206,26 @@ class YtDlpService
             }
             
             // Method 8: Extract from any Instagram CDN URLs directly in HTML
-            // BUT: Skip URLs with stp= parameter (crop) AND rsrc.php/static URLs (icons, not post images)
+            // ACCEPT crop URLs and thumbnails (user requirement: download by ANY means)
+            // Skip ONLY very small rsrc.php icons (32x32, 64x64, 76x76)
             if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp))/i', $html, $cdnMatches)) {
                 foreach ($cdnMatches[1] as $cdnUrl) {
                     $decodedUrl = html_entity_decode($cdnUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                     
-                    // CRITICAL: Skip rsrc.php/static URLs (icons/logos, NOT post images)
-                    if (str_contains($decodedUrl, '/rsrc.php/') || 
-                        str_contains($decodedUrl, 'static.cdninstagram.com') ||
-                        str_contains($decodedUrl, 'icon') ||
-                        str_contains($decodedUrl, 'logo')) {
-                        Log::debug('Skipping CDN URL (icon/logo, not post image)', [
+                    // Skip ONLY very small rsrc.php icons (32x32, 64x64, 76x76) - they're not post images
+                    if (str_contains($decodedUrl, '/rsrc.php/') && 
+                        preg_match('/(32x32|64x64|76x76)/', $decodedUrl)) {
+                        Log::debug('Skipping very small rsrc.php icon (not post image)', [
                             'url' => substr($decodedUrl, 0, 80) . '...',
                         ]);
                         continue;
                     }
                     
-                    // CRITICAL: Skip URLs with stp= parameter (crop parameter)
-                    if (!str_contains($decodedUrl, 'stp=')) {
-                        $imageUrls[] = $decodedUrl;
-                    } else {
-                        Log::debug('Skipping CDN URL with crop parameter (stp=)', [
+                    // ACCEPT all other URLs (crop, thumbnail, preview - anything!)
+                    // User requirement: download image by ANY means, even if cropped/resized
+                    $imageUrls[] = $decodedUrl;
+                    if (str_contains($decodedUrl, 'stp=')) {
+                        Log::debug('Found CDN URL with crop parameter (stp=) - accepting as fallback', [
                             'url' => substr($decodedUrl, 0, 80) . '...',
                         ]);
                     }
@@ -3234,14 +3233,13 @@ class YtDlpService
             }
             
             // Method 9: Extract from data-src attributes (lazy loading)
-            // BUT: Skip URLs with stp= parameter (crop parameter)
+            // ACCEPT crop URLs and thumbnails (user requirement: download by ANY means)
             if (preg_match_all('/data-src=["\']([^"\']+)["\']/i', $html, $dataSrcMatches)) {
                 foreach ($dataSrcMatches[1] as $dataSrc) {
                     $decodedSrc = html_entity_decode($dataSrc, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                    // CRITICAL: Skip URLs with stp= parameter (crop parameter)
-                    if (!str_contains($decodedSrc, 'stp=') &&
-                        (str_contains($decodedSrc, 'instagram.com') || str_contains($decodedSrc, 'cdninstagram.com') || 
-                         str_contains($decodedSrc, 'fbcdn.net') || preg_match('/\.(jpg|jpeg|png|webp)/i', $decodedSrc))) {
+                    // ACCEPT all image URLs (including crop/thumbnail)
+                    if (str_contains($decodedSrc, 'instagram.com') || str_contains($decodedSrc, 'cdninstagram.com') || 
+                        str_contains($decodedSrc, 'fbcdn.net') || preg_match('/\.(jpg|jpeg|png|webp)/i', $decodedSrc)) {
                         $imageUrls[] = $decodedSrc;
                     }
                 }
@@ -3355,13 +3353,12 @@ class YtDlpService
                         foreach ($fallbackMatches[1] as $fallbackUrl) {
                             $decodedFallbackUrl = html_entity_decode($fallbackUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                             
-                            // CRITICAL: Skip rsrc.php/static URLs (icons, not post images)
-                            if (str_contains($decodedFallbackUrl, '/rsrc.php/') || 
-                                str_contains($decodedFallbackUrl, 'static.cdninstagram.com') ||
-                                str_contains($decodedFallbackUrl, 'icon') ||
-                                str_contains($decodedFallbackUrl, 'logo') ||
-                                str_contains($decodedFallbackUrl, 'favicon')) {
-                                continue; // Skip icon/logo URLs
+                            // Skip ONLY very small rsrc.php icons (32x32, 64x64, 76x76) - they're not post images
+                            // Accept everything else (user requirement: download by ANY means)
+                            if (str_contains($decodedFallbackUrl, '/rsrc.php/') && 
+                                preg_match('/(32x32|64x64|76x76)/', $decodedFallbackUrl)) {
+                                // Skip only very small icons
+                                continue;
                             }
                             
                             if (filter_var($decodedFallbackUrl, FILTER_VALIDATE_URL)) {
@@ -3388,15 +3385,104 @@ class YtDlpService
                     }
                 }
                 
-                // If still empty, throw exception
+                // If still empty, try ULTRA-AGGRESSIVE fallback: Accept ANY Instagram CDN URL (even crop/thumbnail/icon)
+                // User requirement: download image by ANY means, even if cropped/resized
                 if (empty($imageUrls)) {
-                    throw new \RuntimeException('No image URLs found in HTML');
+                    Log::warning('All standard fallback methods failed - trying ultra-aggressive extraction (accept ANY CDN URL, including crop/thumbnail)', [
+                        'url' => $url,
+                    ]);
+                    
+                    // Ultra-aggressive: Extract ANY CDN URL with image extension (no filtering)
+                    $ultraAggressivePatterns = [
+                        // Pattern 1: ANY CDN URL with image extension (including crop URLs)
+                        '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                        // Pattern 2: Instagram.com image URLs
+                        '/(https?:\/\/[^"\'\s]*instagram\.com[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                        // Pattern 3: Base64 data URLs (rare, but possible)
+                        '/(data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+\/]+={0,2})/i',
+                    ];
+                    
+                    foreach ($ultraAggressivePatterns as $patternIndex => $pattern) {
+                        if (preg_match_all($pattern, $html, $ultraMatches)) {
+                            foreach ($ultraMatches[1] as $ultraUrl) {
+                                $decodedUltraUrl = html_entity_decode($ultraUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                
+                                // Still skip ONLY rsrc.php static assets (they're too small, 32x32)
+                                // But accept EVERYTHING else (crop, thumbnail, preview - anything!)
+                                if (str_contains($decodedUltraUrl, '/rsrc.php/') && 
+                                    preg_match('/(32x32|64x64|76x76)/', $decodedUltraUrl)) {
+                                    // Skip only very small icons (32x32, 64x64, 76x76 from rsrc.php)
+                                    continue;
+                                }
+                                
+                                if (filter_var($decodedUltraUrl, FILTER_VALIDATE_URL) || 
+                                    str_starts_with($decodedUltraUrl, 'data:image/')) {
+                                    $imageUrls[] = $decodedUltraUrl;
+                                    Log::info('Found image URL via ultra-aggressive method (may be crop/thumbnail)', [
+                                        'url' => substr($decodedUltraUrl, 0, 100) . '...',
+                                        'pattern_index' => $patternIndex + 1,
+                                        'warning' => 'May be cropped/thumbnail - using as last resort',
+                                    ]);
+                                    
+                                    // Stop after finding first valid URL
+                                    if (!empty($imageUrls)) {
+                                        break 2; // Break both loops
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If STILL empty after ultra-aggressive, try extracting from meta tags (og:image, twitter:image)
+                if (empty($imageUrls)) {
+                    Log::warning('Ultra-aggressive extraction failed - trying meta tags extraction', [
+                        'url' => $url,
+                    ]);
+                    
+                    // Extract og:image
+                    if (preg_match_all('/<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $ogMatches)) {
+                        foreach ($ogMatches[1] as $ogUrl) {
+                            $decodedOgUrl = html_entity_decode($ogUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            if (filter_var($decodedOgUrl, FILTER_VALIDATE_URL)) {
+                                $imageUrls[] = $decodedOgUrl;
+                                Log::info('Found image URL via og:image meta tag (last resort)', [
+                                    'url' => substr($decodedOgUrl, 0, 100) . '...',
+                                ]);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Extract twitter:image
+                    if (empty($imageUrls) && preg_match_all('/<meta[^>]*name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $twitterMatches)) {
+                        foreach ($twitterMatches[1] as $twitterUrl) {
+                            $decodedTwitterUrl = html_entity_decode($twitterUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            if (filter_var($decodedTwitterUrl, FILTER_VALIDATE_URL)) {
+                                $imageUrls[] = $decodedTwitterUrl;
+                                Log::info('Found image URL via twitter:image meta tag (last resort)', [
+                                    'url' => substr($decodedTwitterUrl, 0, 100) . '...',
+                                ]);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // If STILL empty, throw exception
+                if (empty($imageUrls)) {
+                    Log::error('ALL image extraction methods failed - no URLs found in HTML', [
+                        'url' => $url,
+                        'html_length' => strlen($html),
+                        'html_preview' => substr($html, 0, 500) . '...',
+                    ]);
+                    throw new \RuntimeException('No image URLs found in HTML after all extraction methods');
                 }
             }
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP (99%+ original)
-            // CRITICAL: Crop parameter (stp=) causes 50%+ image cropping - SKIP IT COMPLETELY!
-            // Priority: premiumDisplayUrls (display_url) > premiumCandidateUrls (candidates[0]) > goodUrls (no stp=) > cropUrls (SKIPPED)
+            // User requirement: Download by ANY means, even if cropped/resized
+            // Priority: premiumDisplayUrls (display_url) > premiumCandidateUrls (candidates[0]) > goodUrls (no stp=) > cropUrls (fallback)
             
             // Separate URLs by priority to avoid crop (stp= parameter)
             // Premium URLs are already tracked separately (display_url and candidates[0])
@@ -3404,17 +3490,10 @@ class YtDlpService
             $cropUrls = []; // WITH stp= parameter (causes 50%+ crop) - COMPLETELY SKIPPED
             
             // Process regular imageUrls - separate by crop parameter
+            // ACCEPT thumbnails/previews if no better URLs found (user requirement: download by ANY means)
             foreach ($imageUrls as $url) {
-                // REJECT thumbnail/preview URLs (too small)
-                if (str_contains($url, 'thumbnail') || 
-                    str_contains($url, 'preview') || 
-                    str_contains($url, 'thumb') ||
-                    str_contains($url, '150x150') ||
-                    str_contains($url, '240x240') ||
-                    str_contains($url, '320x320') ||
-                    str_contains($url, '480x480')) {
-                    continue; // Skip thumbnails
-                }
+                // Don't skip thumbnails/previews - accept them if nothing better is found
+                // User requirement: download image by ANY means, even if cropped/resized
                 
                 // Separate URLs by crop parameter - crop URLs are fallback (lowest priority)
                 $hasStpCrop = str_contains($url, 'stp=');
