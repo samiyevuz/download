@@ -2887,24 +2887,54 @@ class YtDlpService
             
             // Method 5: Extract from window.__additionalDataLoaded or similar patterns
             // display_url is usually the full-size image URL (highest priority, 99%+ original, NO crop)
-            if (preg_match_all('/"display_url":\s*"([^"]+)"/i', $html, $displayUrlMatches)) {
-                foreach ($displayUrlMatches[1] as $displayUrl) {
-                    // Decode HTML entities
-                    $displayUrl = html_entity_decode($displayUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                    if (filter_var($displayUrl, FILTER_VALIDATE_URL)) {
-                        // display_url is premium - 99%+ original, no crop
-                        $premiumDisplayUrls[] = $displayUrl;
-                        Log::info('Found display_url from HTML (99%+ original, NO crop)', [
-                            'url' => substr($displayUrl, 0, 80) . '...',
-                        ]);
+            // Try multiple regex patterns to find display_url (Instagram uses different formats)
+            $displayUrlPatterns = [
+                '/"display_url":\s*"([^"]+)"/i', // Standard format
+                '/\'display_url\':\s*\'([^\']+)\'/i', // Single quotes
+                '/display_url["\']?\s*:\s*["\']?([^"\'\s,}]+)/i', // Flexible quotes
+                '/display_url["\']?\s*:\s*["\']?(https?:\/\/[^"\'\s,}]+)/i', // With http
+            ];
+            
+            foreach ($displayUrlPatterns as $pattern) {
+                if (preg_match_all($pattern, $html, $displayUrlMatches)) {
+                    foreach ($displayUrlMatches[1] as $displayUrl) {
+                        // Decode HTML entities
+                        $displayUrl = html_entity_decode($displayUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                        // Remove trailing characters that might be part of JSON
+                        $displayUrl = rtrim($displayUrl, ',}');
+                        if (filter_var($displayUrl, FILTER_VALIDATE_URL) && !str_contains($displayUrl, 'stp=')) {
+                            // display_url is premium - 99%+ original, no crop (and no stp=)
+                            $premiumDisplayUrls[] = $displayUrl;
+                            Log::info('Found display_url from HTML regex (99%+ original, NO crop, NO stp=)', [
+                                'url' => substr($displayUrl, 0, 80) . '...',
+                                'pattern' => substr($pattern, 0, 40) . '...',
+                            ]);
+                        }
                     }
                 }
             }
             
             // Method 5b: Extract from window.__additionalDataLoaded JSON structure
             // This contains the highest quality image URLs
-            if (preg_match('/window\.__additionalDataLoaded\s*\([^,]+,\s*({.+?})\);/is', $html, $additionalDataMatches)) {
-                $additionalData = json_decode($additionalDataMatches[1], true);
+            // Try multiple patterns for __additionalDataLoaded (Instagram uses different formats)
+            $additionalDataPatterns = [
+                '/window\.__additionalDataLoaded\s*\([^,]+,\s*({.+?})\);/is', // Standard format
+                '/window\.__additionalDataLoaded\s*\([^,]+\s*,\s*({.+?})\);/is', // With spaces
+                '/__additionalDataLoaded\s*\([^,]+\s*,\s*({.+?})\);/is', // Without window.
+                '/additionalDataLoaded\s*\([^,]+\s*,\s*({.+?})\);/is', // Without __
+            ];
+            
+            $additionalData = null;
+            foreach ($additionalDataPatterns as $pattern) {
+                if (preg_match($pattern, $html, $additionalDataMatches)) {
+                    $additionalData = json_decode($additionalDataMatches[1], true);
+                    if ($additionalData && is_array($additionalData)) {
+                        break; // Found valid JSON
+                    }
+                }
+            }
+            
+            if ($additionalData && is_array($additionalData)) {
                 if ($additionalData && is_array($additionalData)) {
                     // Navigate through additionalData to find display_url and image_versions2
                     $paths = [
@@ -3102,25 +3132,52 @@ class YtDlpService
             }
             
             // Method 8: Extract from any Instagram CDN URLs directly in HTML
+            // BUT: Skip URLs with stp= parameter (crop parameter) - they cause 50%+ cropping
             if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp))/i', $html, $cdnMatches)) {
-                $imageUrls = array_merge($imageUrls, $cdnMatches[1]);
+                foreach ($cdnMatches[1] as $cdnUrl) {
+                    $decodedUrl = html_entity_decode($cdnUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    // CRITICAL: Skip URLs with stp= parameter (crop parameter)
+                    if (!str_contains($decodedUrl, 'stp=')) {
+                        $imageUrls[] = $decodedUrl;
+                    } else {
+                        Log::debug('Skipping CDN URL with crop parameter (stp=)', [
+                            'url' => substr($decodedUrl, 0, 80) . '...',
+                        ]);
+                    }
+                }
             }
             
             // Method 9: Extract from data-src attributes (lazy loading)
+            // BUT: Skip URLs with stp= parameter (crop parameter)
             if (preg_match_all('/data-src=["\']([^"\']+)["\']/i', $html, $dataSrcMatches)) {
                 foreach ($dataSrcMatches[1] as $dataSrc) {
-                    if (str_contains($dataSrc, 'instagram.com') || str_contains($dataSrc, 'cdninstagram.com') || 
-                        str_contains($dataSrc, 'fbcdn.net') || preg_match('/\.(jpg|jpeg|png|webp)/i', $dataSrc)) {
-                        $imageUrls[] = $dataSrc;
+                    $decodedSrc = html_entity_decode($dataSrc, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    // CRITICAL: Skip URLs with stp= parameter (crop parameter)
+                    if (!str_contains($decodedSrc, 'stp=') &&
+                        (str_contains($decodedSrc, 'instagram.com') || str_contains($decodedSrc, 'cdninstagram.com') || 
+                         str_contains($decodedSrc, 'fbcdn.net') || preg_match('/\.(jpg|jpeg|png|webp)/i', $decodedSrc))) {
+                        $imageUrls[] = $decodedSrc;
                     }
                 }
             }
             
             // Method 10: Extract from script tags with JSON (comprehensive regex)
+            // Prioritize display_url, skip crop URLs
             if (preg_match_all('/<script[^>]*>.*?"(display_url|thumbnail_url|src)":\s*"([^"]+)"[^<]*<\/script>/is', $html, $scriptMatches)) {
-                foreach ($scriptMatches[2] as $scriptUrl) {
-                    if (filter_var($scriptUrl, FILTER_VALIDATE_URL)) {
-                        $imageUrls[] = $scriptUrl;
+                foreach ($scriptMatches[1] as $index => $matchType) {
+                    $scriptUrl = $scriptMatches[2][$index];
+                    $decodedUrl = html_entity_decode($scriptUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    if (filter_var($decodedUrl, FILTER_VALIDATE_URL)) {
+                        // If it's display_url, add to premium (no crop)
+                        if (strtolower($matchType) === 'display_url' && !str_contains($decodedUrl, 'stp=')) {
+                            $premiumDisplayUrls[] = $decodedUrl;
+                            Log::info('Found display_url from script tag (99%+ original, NO crop)', [
+                                'url' => substr($decodedUrl, 0, 80) . '...',
+                            ]);
+                        } elseif (!str_contains($decodedUrl, 'stp=')) {
+                            // Other URLs without crop parameter
+                            $imageUrls[] = $decodedUrl;
+                        }
                     }
                 }
             }
