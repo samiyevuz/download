@@ -2965,32 +2965,14 @@ class YtDlpService
             }
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP
-            // CRITICAL: Clean URLs - remove crop parameters and size restrictions to get full-size images
-            $imageUrls = array_map(function($url) {
-                // Parse URL to remove crop parameters
-                $parsedUrl = parse_url($url);
-                if (!isset($parsedUrl['query'])) {
-                    return $url; // No query parameters, return as is
-                }
-                
-                // Parse query string
-                parse_str($parsedUrl['query'], $queryParams);
-                
-                // Remove crop parameters that limit image size
-                unset($queryParams['stp']); // Crop parameter
-                unset($queryParams['s']); // Size parameter (e.g., s640x640)
-                
-                // Rebuild URL without crop parameters
-                $cleanQuery = http_build_query($queryParams);
-                $cleanUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'] . 
-                           (isset($parsedUrl['path']) ? $parsedUrl['path'] : '') .
-                           (!empty($cleanQuery) ? '?' . $cleanQuery : '');
-                
-                return $cleanUrl;
-            }, $imageUrls);
+            // IMPORTANT: Do NOT remove crop parameters from URLs - they are required for Instagram CDN
+            // Instead, prioritize URLs without crop parameters or with larger sizes
             
-            // Filter out thumbnail/preview URLs
-            $imageUrls = array_filter($imageUrls, function($url) {
+            // Separate URLs: those with crop (stp=) and those without
+            $urlsWithCrop = [];
+            $urlsWithoutCrop = [];
+            
+            foreach ($imageUrls as $url) {
                 // REJECT thumbnail/preview URLs
                 if (str_contains($url, 'thumbnail') || 
                     str_contains($url, 'preview') || 
@@ -2999,14 +2981,48 @@ class YtDlpService
                     str_contains($url, '240x240') ||
                     str_contains($url, '320x320') ||
                     str_contains($url, '480x480')) {
-                    return false;
+                    continue; // Skip thumbnails
                 }
                 
-                return true;
-            });
+                // Check if URL has crop parameter
+                if (str_contains($url, 'stp=')) {
+                    $urlsWithCrop[] = $url;
+                } else {
+                    $urlsWithoutCrop[] = $url;
+                }
+            }
             
-            // Sort URLs by size parameters to get HIGHEST QUALITY (full size, no crop)
+            // Prioritize URLs without crop parameters first
+            // If no URLs without crop, use URLs with crop but prefer larger sizes
+            if (!empty($urlsWithoutCrop)) {
+                $imageUrls = $urlsWithoutCrop;
+                Log::info('Using URLs without crop parameters', [
+                    'url' => $url,
+                    'count' => count($urlsWithoutCrop),
+                ]);
+            } else {
+                $imageUrls = $urlsWithCrop;
+                Log::info('No URLs without crop found, using URLs with crop (will sort by size)', [
+                    'url' => $url,
+                    'count' => count($urlsWithCrop),
+                ]);
+            }
+            
+            // Sort URLs by size parameters to get HIGHEST QUALITY (full size, minimal crop)
+            // Priority: 1) No crop parameter, 2) Larger size, 3) Better domain
             usort($imageUrls, function($a, $b) {
+                // First priority: URLs without crop parameter (stp=) are better
+                $aHasCrop = str_contains($a, 'stp=');
+                $bHasCrop = str_contains($b, 'stp=');
+                
+                if (!$aHasCrop && $bHasCrop) {
+                    return -1; // a is better (no crop)
+                }
+                if ($aHasCrop && !$bHasCrop) {
+                    return 1; // b is better (no crop)
+                }
+                
+                // Both have crop or both don't - compare by size
                 // Score based on domain (scontent- is better for full images)
                 $aDomainScore = (str_contains($a, 'scontent-') ? 20 : 0) + (str_contains($a, '/scontent/') ? 10 : 0);
                 $bDomainScore = (str_contains($b, 'scontent-') ? 20 : 0) + (str_contains($b, '/scontent/') ? 10 : 0);
@@ -3044,7 +3060,7 @@ class YtDlpService
                     return $bDomainScore <=> $aDomainScore;
                 }
                 
-                // Prioritize by total size (larger = full image, not cropped)
+                // Prioritize by total size (larger = full image, less crop)
                 if ($aSize > 0 && $bSize > 0) {
                     return $bSize <=> $aSize; // Descending order (larger first)
                 }
