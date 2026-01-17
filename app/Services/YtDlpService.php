@@ -2608,31 +2608,29 @@ class YtDlpService
             
             // If file_get_contents fails, try with curl as fallback
             if ($imageData === false) {
-                Log::debug('file_get_contents failed, trying curl', ['url' => substr($imageUrl, 0, 80) . '...']);
+                Log::debug('file_get_contents failed, trying curl', [
+                    'url' => substr($imageUrl, 0, 80) . '...',
+                    'referer' => $referer,
+                    'has_cookie' => !empty($cookieString),
+                ]);
                 
                 $ch = curl_init($imageUrl);
                 
-                // Prepare curl headers (convert to array format, keep Cookie header)
-                $curlHeaders = [];
-                $cookieString = '';
-                foreach ($headers as $header) {
-                    if (str_starts_with($header, 'Cookie:')) {
-                        // Extract cookie string from "Cookie: ..." header
-                        $cookieString = trim(substr($header, 7)); // Remove "Cookie:" prefix
-                    } else {
-                        $curlHeaders[] = $header;
-                    }
-                }
-                
-                // Add proper headers for Instagram CDN (to avoid 403 errors)
-                // CRITICAL: Use correct Referer matching the original post URL
-                $curlHeaders = array_merge($curlHeaders, [
+                // Build curl headers without duplicates
+                // CRITICAL: Instagram CDN requires correct Referer and headers to avoid 403 errors
+                $curlHeaders = [
+                    'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    'Referer: ' . $referer,
                     'Accept: image/webp,image/apng,image/*,*/*;q=0.8',
                     'Accept-Language: en-US,en;q=0.9',
-                    'Referer: ' . $referer,
+                    'Accept-Encoding: identity', // Disable compression to avoid issues
                     'Origin: https://www.instagram.com',
-                    'Accept-Encoding: identity', // Disable compression
-                ]);
+                ];
+                
+                // Add cookies if available (CRITICAL for Instagram CDN)
+                if (!empty($cookieString)) {
+                    $curlHeaders[] = 'Cookie: ' . $cookieString;
+                }
                 
                 curl_setopt_array($ch, [
                     CURLOPT_RETURNTRANSFER => true,
@@ -2645,33 +2643,49 @@ class YtDlpService
                     CURLOPT_SSL_VERIFYHOST => false,
                 ]);
                 
-                // Add cookies if available (for Instagram CDN)
-                // Use cookie string from header if available, otherwise try COOKIEFILE
-                if ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
-                    if (!empty($cookieString)) {
-                        // Use parsed cookie string
-                        curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
-                        Log::debug('Using parsed cookie string for curl', [
-                            'url' => substr($imageUrl, 0, 80) . '...',
-                            'cookie_length' => strlen($cookieString),
-                        ]);
-                    } else {
-                        // Fallback: try COOKIEFILE (may not work with Netscape format)
-                        curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
-                        curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
-                    }
+                // Add cookies via CURLOPT_COOKIE if available (for Instagram CDN)
+                // CRITICAL: Instagram CDN often requires valid cookies to avoid 403 errors
+                if (!empty($cookieString)) {
+                    curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
+                    Log::debug('Using cookie string for curl (Instagram CDN)', [
+                        'url' => substr($imageUrl, 0, 80) . '...',
+                        'cookie_length' => strlen($cookieString),
+                        'referer' => $referer,
+                    ]);
+                } elseif ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
+                    // Fallback: try COOKIEFILE (may not work with Netscape format, but worth trying)
+                    curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
+                    curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
+                    Log::debug('Using cookie file for curl (Instagram CDN fallback)', [
+                        'url' => substr($imageUrl, 0, 80) . '...',
+                        'cookie_path' => $cookiesPath,
+                        'referer' => $referer,
+                    ]);
                 }
                 
                 $imageData = curl_exec($ch);
                 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 $curlError = curl_error($ch);
+                $responseSize = $imageData ? strlen($imageData) : 0;
                 curl_close($ch);
+                
+                Log::info('Curl download attempt result', [
+                    'url' => substr($imageUrl, 0, 80) . '...',
+                    'http_code' => $httpCode,
+                    'response_size' => $responseSize,
+                    'curl_error' => $curlError,
+                    'referer' => $referer,
+                    'has_cookie' => !empty($cookieString),
+                ]);
                 
                 if ($imageData === false || $httpCode !== 200) {
                     Log::warning('Failed to download image from URL (both file_get_contents and curl failed)', [
                         'url' => $imageUrl,
                         'http_code' => $httpCode,
                         'curl_error' => $curlError,
+                        'referer' => $referer,
+                        'has_cookie' => !empty($cookieString),
+                        'response_size' => $responseSize,
                     ]);
                     return null;
                 }
