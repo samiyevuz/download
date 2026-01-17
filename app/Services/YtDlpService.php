@@ -1883,17 +1883,18 @@ class YtDlpService
             throw new \RuntimeException("Cookie file not accessible: {$absoluteCookiePath}");
         }
         
-        // CRITICAL: For Instagram with cookies, we need minimal flags to avoid conflicts
-        // --quiet and --no-warnings can hide important cookie authentication errors
-        // Use --verbose for better debugging, but reduce noise with --no-progress
+        // CRITICAL: For Instagram with cookies, we need proper headers and minimal flags
+        // Try desktop user-agent first (more compatible with Instagram web API)
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
             '--no-progress', // Reduce progress noise but keep warnings
             '--ignore-errors',
             '--cookies', $absoluteCookiePath, // Use absolute path
-            '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '--referer', 'https://www.instagram.com/',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=mp4]/best[ext=webm]/best',
             // Do NOT use --quiet with cookies - it hides authentication errors
