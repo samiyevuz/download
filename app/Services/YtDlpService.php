@@ -1895,7 +1895,8 @@ class YtDlpService
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=mp4]/best[ext=webm]/best',
-            // REMOVED: '--extractor-args', 'instagram:skip_auth=True', // This conflicts with --cookies
+            // Try with app_id when using cookies (may help with authentication)
+            '--extractor-args', 'instagram:app_id=936619743392459',
             $url,
         ];
         
@@ -1953,6 +1954,51 @@ class YtDlpService
      */
     private function downloadInstagramVideoWithoutCookies(string $url, string $outputDir): array
     {
+        // REMOVED: '--extractor-args', 'instagram:skip_auth=True' - This parameter is NOT valid and doesn't work
+        // Instagram now requires cookies for most content. Without cookies, we try with enhanced headers
+        // but this may fail for private/protected content.
+        
+        // Method 1: Try with default Instagram App ID (may help with some public content)
+        try {
+            $arguments = [
+                $this->ytDlpPath,
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                '--no-progress',
+                '--ignore-errors',
+                '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                '--referer', 'https://www.instagram.com/',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                '--extractor-args', 'instagram:app_id=936619743392459',
+                '--output', $outputDir . '/%(title)s.%(ext)s',
+                '--format', 'best[ext=mp4]/best[ext=webm]/best',
+                $url,
+            ];
+
+            $downloadedFiles = $this->executeDownload($arguments, $url, $outputDir);
+            
+            // Filter to only return video files (exclude images)
+            $videos = array_filter($downloadedFiles, function($file) {
+                return $this->isVideo($file);
+            });
+            
+            if (!empty($videos)) {
+                Log::info('Instagram video downloaded without cookies (using app_id)', [
+                    'url' => $url,
+                    'videos_count' => count($videos),
+                ]);
+                return array_values($videos);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Instagram video download with app_id failed, trying with basic headers', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Method 2: Try with basic headers (fallback)
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -1966,7 +2012,6 @@ class YtDlpService
             '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=mp4]/best[ext=webm]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
             $url,
         ];
 
