@@ -2488,6 +2488,115 @@ class YtDlpService
     }
     
     /**
+     * Extract audio from video file
+     *
+     * @param string $videoPath Path to video file
+     * @param string $outputDir Output directory for audio file
+     * @return string|null Path to extracted audio file or null on failure
+     */
+    public function extractAudioFromVideo(string $videoPath, string $outputDir): ?string
+    {
+        try {
+            if (!file_exists($videoPath)) {
+                Log::error('Video file does not exist for audio extraction', [
+                    'video_path' => $videoPath,
+                ]);
+                return null;
+            }
+
+            // Generate unique audio filename
+            $audioFilename = uniqid('audio_', true) . '.mp3';
+            $audioPath = $outputDir . '/' . $audioFilename;
+
+            // Try ffmpeg first (more reliable)
+            $ffmpegPath = config('telegram.ffmpeg_path', 'ffmpeg');
+            
+            // Check if ffmpeg is available
+            $ffmpegCheck = shell_exec("which {$ffmpegPath} 2>&1");
+            if (empty($ffmpegCheck) || !file_exists(trim($ffmpegCheck))) {
+                Log::warning('ffmpeg not found, trying yt-dlp for audio extraction', [
+                    'video_path' => $videoPath,
+                ]);
+                
+                // Fallback: Use yt-dlp to extract audio (if video was downloaded via yt-dlp)
+                // yt-dlp can extract audio from already downloaded video
+                $ytDlpPath = config('telegram.yt_dlp_path', '/usr/local/bin/yt-dlp');
+                
+                // yt-dlp -x --audio-format mp3 extracts audio
+                // But we need to provide the video file, not URL
+                // yt-dlp doesn't directly extract from file, so we'll use ffmpeg if available
+                // Otherwise, return null (audio extraction not available)
+                return null;
+            }
+
+            Log::info('Extracting audio from video using ffmpeg', [
+                'video_path' => $videoPath,
+                'audio_path' => $audioPath,
+                'ffmpeg_path' => $ffmpegPath,
+            ]);
+
+            // Use ffmpeg to extract audio: ffmpeg -i input.mp4 -vn -acodec libmp3lame -ab 192k output.mp3
+            // -vn: disable video
+            // -acodec libmp3lame: use MP3 codec
+            // -ab 192k: audio bitrate 192k (good quality)
+            // -y: overwrite output file if exists
+            $command = [
+                $ffmpegPath,
+                '-i', escapeshellarg($videoPath),
+                '-vn', // No video
+                '-acodec', 'libmp3lame',
+                '-ab', '192k', // Audio bitrate
+                '-ar', '44100', // Sample rate
+                '-ac', '2', // Stereo
+                '-y', // Overwrite output
+                escapeshellarg($audioPath),
+            ];
+
+            $process = new \Symfony\Component\Process\Process($command);
+            $process->setTimeout(120); // 2 minutes timeout for audio extraction
+            $process->run();
+
+            if (!$process->isSuccessful()) {
+                $errorOutput = $process->getErrorOutput();
+                Log::error('ffmpeg audio extraction failed', [
+                    'video_path' => $videoPath,
+                    'audio_path' => $audioPath,
+                    'exit_code' => $process->getExitCode(),
+                    'error_output' => substr($errorOutput, 0, 500),
+                ]);
+                return null;
+            }
+
+            if (!file_exists($audioPath) || filesize($audioPath) === 0) {
+                Log::error('Audio file was not created or is empty', [
+                    'video_path' => $videoPath,
+                    'audio_path' => $audioPath,
+                    'file_exists' => file_exists($audioPath),
+                    'file_size' => file_exists($audioPath) ? filesize($audioPath) : 0,
+                ]);
+                return null;
+            }
+
+            $audioSize = filesize($audioPath);
+            Log::info('Audio extracted successfully from video', [
+                'video_path' => basename($videoPath),
+                'audio_path' => basename($audioPath),
+                'audio_size' => $audioSize,
+                'audio_size_mb' => round($audioSize / 1024 / 1024, 2),
+            ]);
+
+            return $audioPath;
+        } catch (\Exception $e) {
+            Log::error('Exception extracting audio from video', [
+                'video_path' => $videoPath,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return null;
+        }
+    }
+
+    /**
      * Check if URL is an image URL
      *
      * @param string $url

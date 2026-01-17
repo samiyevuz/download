@@ -229,6 +229,74 @@ class DownloadMediaJob implements ShouldQueue
                     $this->messageId
                 );
                 
+                // Extract and send audio from video (user requirement: music should be sent separately)
+                try {
+                    Log::info('Extracting audio from video', [
+                        'chat_id' => $this->chatId,
+                        'video_path' => $videoPath,
+                    ]);
+                    
+                    $audioPath = $ytDlpService->extractAudioFromVideo($videoPath, $tempDir);
+                    
+                    if ($audioPath && file_exists($audioPath)) {
+                        $audioFileSize = filesize($audioPath);
+                        $maxAudioSize = 50 * 1024 * 1024; // 50MB Telegram limit for documents
+                        
+                        if ($audioFileSize <= $maxAudioSize) {
+                            // Get localized caption for audio
+                            $audioCaptions = [
+                                'uz' => "🎵 <b>Video musiqasi</b>\n\nAudio fayl video'dan ajratildi.",
+                                'ru' => "🎵 <b>Музыка из видео</b>\n\nАудио файл извлечен из видео.",
+                                'en' => "🎵 <b>Video Audio</b>\n\nAudio file extracted from video.",
+                            ];
+                            
+                            $audioCaption = $audioCaptions[$this->language] ?? $audioCaptions['en'];
+                            
+                            $audioSuccess = $telegramService->sendDocument(
+                                $this->chatId,
+                                $audioPath,
+                                $audioCaption,
+                                $this->messageId
+                            );
+                            
+                            if ($audioSuccess) {
+                                Log::info('Audio sent successfully', [
+                                    'chat_id' => $this->chatId,
+                                    'audio_path' => basename($audioPath),
+                                    'audio_size' => $audioFileSize,
+                                ]);
+                            } else {
+                                Log::warning('Failed to send audio', [
+                                    'chat_id' => $this->chatId,
+                                    'audio_path' => basename($audioPath),
+                                ]);
+                            }
+                        } else {
+                            Log::warning('Audio file too large for Telegram', [
+                                'chat_id' => $this->chatId,
+                                'audio_path' => basename($audioPath),
+                                'audio_size' => $audioFileSize,
+                                'max_size' => $maxAudioSize,
+                            ]);
+                        }
+                        
+                        // Cleanup audio file after sending (or if too large)
+                        @unlink($audioPath);
+                    } else {
+                        Log::debug('Audio extraction failed or not available', [
+                            'chat_id' => $this->chatId,
+                            'video_path' => $videoPath,
+                        ]);
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Exception extracting/sending audio', [
+                        'chat_id' => $this->chatId,
+                        'video_path' => $videoPath,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Don't fail the job if audio extraction fails - video was already sent
+                }
+                
                 if (!$success) {
                     Log::warning('Failed to send video to group', [
                         'chat_id' => $this->chatId,
