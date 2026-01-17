@@ -1772,6 +1772,8 @@ class YtDlpService
             'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
         ]);
         
+        // CRITICAL: Don't use skip_auth=True when using cookies - it conflicts with cookie authentication
+        // Instagram requires valid cookies, skip_auth will bypass cookie authentication
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -1784,7 +1786,7 @@ class YtDlpService
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=mp4]/best[ext=webm]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
+            // REMOVED: '--extractor-args', 'instagram:skip_auth=True', // This conflicts with --cookies
             $url,
         ];
 
