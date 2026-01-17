@@ -1620,7 +1620,7 @@ class YtDlpService
                         '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                         '--output', $outputDir . '/%(title)s.%(ext)s',
                         '--format', $format,
-                        '--extractor-args', 'instagram:skip_auth=True',
+                        '--extractor-args', 'instagram:app_id=936619743392459',
                         $url,
                     ];
 
@@ -1706,7 +1706,7 @@ class YtDlpService
                     '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                     '--output', $outputDir . '/%(title)s.%(ext)s',
                     '--format', $format,
-                    '--extractor-args', 'instagram:skip_auth=True',
+                    '--extractor-args', 'instagram:app_id=936619743392459',
                     $url,
                 ];
 
@@ -2231,7 +2231,7 @@ class YtDlpService
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
+            '--extractor-args', 'instagram:app_id=936619743392459',
             $url,
         ];
 
@@ -2290,7 +2290,7 @@ class YtDlpService
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
+            '--extractor-args', 'instagram:app_id=936619743392459',
             $url,
         ];
 
@@ -2387,7 +2387,7 @@ class YtDlpService
             '--add-header', 'Sec-Fetch-Site:none',
             '--output', $outputDir . '/%(title)s.%(ext)s',
             '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best[ext=mp4]/best[ext=webm]/best',
-            '--extractor-args', 'instagram:skip_auth=True',
+            '--extractor-args', 'instagram:app_id=936619743392459',
             $url,
         ];
 
