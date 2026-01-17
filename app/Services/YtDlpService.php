@@ -1865,6 +1865,24 @@ class YtDlpService
         
         // CRITICAL: Don't use skip_auth=True when using cookies - it conflicts with cookie authentication
         // Instagram requires valid cookies, skip_auth will bypass cookie authentication
+        // Ensure cookie path is absolute BEFORE building arguments
+        $absoluteCookiePath = $cookiesPath;
+        if (!str_starts_with($absoluteCookiePath, '/')) {
+            $absoluteCookiePath = base_path($absoluteCookiePath);
+        }
+        $absoluteCookiePath = realpath($absoluteCookiePath) ?: $absoluteCookiePath;
+        
+        // Verify cookie file is accessible
+        if (!file_exists($absoluteCookiePath) || !is_readable($absoluteCookiePath)) {
+            Log::error('Cookie file not accessible in downloadInstagramVideoWithCookies', [
+                'cookie_path' => $absoluteCookiePath,
+                'original_path' => $cookiesPath,
+                'file_exists' => file_exists($absoluteCookiePath),
+                'is_readable' => is_readable($absoluteCookiePath),
+            ]);
+            throw new \RuntimeException("Cookie file not accessible: {$absoluteCookiePath}");
+        }
+        
         $arguments = [
             $this->ytDlpPath,
             '--no-playlist',
@@ -1872,7 +1890,7 @@ class YtDlpService
             '--quiet',
             '--no-progress',
             '--ignore-errors',
-            '--cookies', $cookiesPath,
+            '--cookies', $absoluteCookiePath, // Use absolute path
             '--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
             '--referer', 'https://www.instagram.com/',
             '--output', $outputDir . '/%(title)s.%(ext)s',
@@ -1880,6 +1898,13 @@ class YtDlpService
             // REMOVED: '--extractor-args', 'instagram:skip_auth=True', // This conflicts with --cookies
             $url,
         ];
+        
+        Log::debug('Built yt-dlp command with cookies for Instagram video', [
+            'url' => $url,
+            'cookie_path' => $absoluteCookiePath,
+            'cookie_file_exists' => file_exists($absoluteCookiePath),
+            'cookie_file_size' => filesize($absoluteCookiePath),
+        ]);
 
         Log::info('Downloading Instagram video with cookies', [
             'url' => $url,
@@ -2428,26 +2453,40 @@ class YtDlpService
         $arguments[0] = $ytDlpPath;
 
         // CRITICAL: Ensure cookie path is absolute for yt-dlp (it requires absolute paths)
-        // Replace relative cookie paths with absolute paths
+        // Replace relative cookie paths with absolute paths BEFORE creating Process
         $cookieIndex = array_search('--cookies', $arguments);
         if ($cookieIndex !== false && isset($arguments[$cookieIndex + 1])) {
             $cookiePath = $arguments[$cookieIndex + 1];
-            // Ensure absolute path
+            
+            // Ensure absolute path - yt-dlp requires absolute paths for cookie files
             if (!str_starts_with($cookiePath, '/')) {
                 $cookiePath = base_path($cookiePath);
             }
-            $cookiePath = realpath($cookiePath) ?: $cookiePath;
             
-            // CRITICAL: Verify cookie path is readable and valid
-            if (!file_exists($cookiePath) || !is_readable($cookiePath)) {
-                Log::error('Cookie file not accessible', [
-                    'cookie_path' => $cookiePath,
-                    'file_exists' => file_exists($cookiePath),
-                    'is_readable' => is_readable($cookiePath),
-                ]);
-                throw new \RuntimeException("Cookie file not accessible: {$cookiePath}");
+            // Use realpath to resolve symlinks and normalize path
+            $resolvedPath = realpath($cookiePath);
+            if ($resolvedPath) {
+                $cookiePath = $resolvedPath;
             }
             
+            // CRITICAL: Verify cookie path is readable and valid BEFORE passing to yt-dlp
+            if (!file_exists($cookiePath)) {
+                Log::error('Cookie file does not exist', [
+                    'cookie_path' => $cookiePath,
+                    'original_path' => $arguments[$cookieIndex + 1],
+                ]);
+                throw new \RuntimeException("Cookie file does not exist: {$cookiePath}");
+            }
+            
+            if (!is_readable($cookiePath)) {
+                Log::error('Cookie file is not readable', [
+                    'cookie_path' => $cookiePath,
+                    'permissions' => substr(sprintf('%o', fileperms($cookiePath)), -4),
+                ]);
+                throw new \RuntimeException("Cookie file is not readable: {$cookiePath}");
+            }
+            
+            // Update argument with absolute, resolved path
             $arguments[$cookieIndex + 1] = $cookiePath;
             
             Log::debug('Cookie path ensured absolute for yt-dlp', [
@@ -2455,6 +2494,7 @@ class YtDlpService
                 'file_exists' => file_exists($cookiePath),
                 'file_size' => filesize($cookiePath),
                 'is_readable' => is_readable($cookiePath),
+                'original_arg' => $arguments[$cookieIndex + 1] ?? 'N/A',
             ]);
         }
         
