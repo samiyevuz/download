@@ -1323,7 +1323,8 @@ class YtDlpService
                         '--referer', 'https://www.instagram.com/',
                         '--extractor-args', 'instagram:skip_auth=False',
                         '--output', $outputDir . '/%(title)s.%(ext)s',
-                        '--format', 'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
+                        // Prioritize full-size images, avoid thumbnails
+                        '--format', 'best[height>=1080][ext=jpg]/best[height>=1080][ext=jpeg]/best[height>=1080][ext=png]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
                         $url,
                     ];
 
@@ -1682,8 +1683,9 @@ class YtDlpService
     {
         // Try different format selectors
         $formatSelectors = [
+            // Prioritize full-size images (height >= 1080), avoid thumbnails
+            'best[height>=1080][ext=jpg]/best[height>=1080][ext=jpeg]/best[height>=1080][ext=png]/best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
             'best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]/best',
-            'best[height<=1080][ext=jpg]/best[height<=1080][ext=jpeg]/best[height<=1080][ext=png]/best[ext=jpg]/best',
             'best',
         ];
         
@@ -2871,44 +2873,93 @@ class YtDlpService
                 throw new \RuntimeException('No image URLs found in HTML');
             }
             
-            // Download images from extracted URLs - prioritize largest size (minimal crop)
-            // Sort URLs by size parameters to get highest quality (95%+ of original image)
+            // Download images from extracted URLs - prioritize FULL SIZE, NO CROP
+            // CRITICAL: Filter out cropped/thumbnail URLs first, then sort by size
+            $imageUrls = array_filter($imageUrls, function($url) {
+                // REJECT URLs with crop parameters (stp= means cropped)
+                if (str_contains($url, 'stp=')) {
+                    return false;
+                }
+                
+                // REJECT thumbnail/preview URLs
+                if (str_contains($url, 'thumbnail') || 
+                    str_contains($url, 'preview') || 
+                    str_contains($url, 'thumb') ||
+                    str_contains($url, '150x150') ||
+                    str_contains($url, '240x240') ||
+                    str_contains($url, '320x320') ||
+                    str_contains($url, '480x480')) {
+                    return false;
+                }
+                
+                return true;
+            });
+            
+            // Sort URLs by size parameters to get HIGHEST QUALITY (full size, no crop)
             usort($imageUrls, function($a, $b) {
-                // Score based on domain (scontent- is better)
-                $aDomainScore = (str_contains($a, 'scontent-') ? 10 : 0) + (str_contains($a, '/scontent/') ? 5 : 0);
-                $bDomainScore = (str_contains($b, 'scontent-') ? 10 : 0) + (str_contains($b, '/scontent/') ? 5 : 0);
+                // Score based on domain (scontent- is better for full images)
+                $aDomainScore = (str_contains($a, 'scontent-') ? 20 : 0) + (str_contains($a, '/scontent/') ? 10 : 0);
+                $bDomainScore = (str_contains($b, 'scontent-') ? 20 : 0) + (str_contains($b, '/scontent/') ? 10 : 0);
                 
                 // Extract size parameters from URL (e.g., s1080x1080, s640x640, s320x320)
                 $aSize = 0;
                 $bSize = 0;
+                $aWidth = 0;
+                $aHeight = 0;
+                $bWidth = 0;
+                $bHeight = 0;
                 
                 // Try to find size parameter in URL
                 if (preg_match('/[?&](s(\d+)x(\d+))/i', $a, $aMatches)) {
-                    $aSize = (int)$aMatches[2] * (int)$aMatches[3]; // width * height
+                    $aWidth = (int)$aMatches[2];
+                    $aHeight = (int)$aMatches[3];
+                    $aSize = $aWidth * $aHeight; // width * height
                 }
                 if (preg_match('/[?&](s(\d+)x(\d+))/i', $b, $bMatches)) {
-                    $bSize = (int)$bMatches[2] * (int)$bMatches[3]; // width * height
+                    $bWidth = (int)$bMatches[2];
+                    $bHeight = (int)$bMatches[3];
+                    $bSize = $bWidth * $bHeight; // width * height
                 }
                 
-                // If size parameters found, prioritize by size (larger = better, less crop)
-                // If no size parameters, check if stp= (crop parameter) exists - prefer without stp
-                $aCropPenalty = (str_contains($a, 'stp=') ? -5 : 0);
-                $bCropPenalty = (str_contains($b, 'stp=') ? -5 : 0);
-                
-                // If sizes are equal, prefer domain
-                if ($aSize === $bSize) {
-                    $aTotalScore = $aDomainScore + $aCropPenalty;
-                    $bTotalScore = $bDomainScore + $bCropPenalty;
-                    return $bTotalScore <=> $aTotalScore; // Descending order
+                // Prioritize larger dimensions (full-size images)
+                // If sizes are equal, prefer wider images (landscape) for full content
+                if ($aSize === $bSize && $aSize > 0) {
+                    // If same total size, prefer wider (landscape) - usually full images
+                    if ($aWidth > $bWidth) {
+                        return -1; // a is better (wider)
+                    } elseif ($bWidth > $aWidth) {
+                        return 1; // b is better (wider)
+                    }
+                    // Same dimensions, prefer better domain
+                    return $bDomainScore <=> $aDomainScore;
                 }
                 
-                // Prioritize by size (larger size = less crop = better)
-                return $bSize <=> $aSize; // Descending order (larger first)
+                // Prioritize by total size (larger = full image, not cropped)
+                if ($aSize > 0 && $bSize > 0) {
+                    return $bSize <=> $aSize; // Descending order (larger first)
+                }
+                
+                // If one has size and other doesn't, prefer the one with size
+                if ($aSize > 0 && $bSize === 0) {
+                    return -1; // a is better
+                }
+                if ($bSize > 0 && $aSize === 0) {
+                    return 1; // b is better
+                }
+                
+                // Both have no size parameter, prefer better domain
+                return $bDomainScore <=> $aDomainScore;
             });
             
             $downloadedFiles = [];
             $downloadedCount = 0;
             $maxImages = 10; // Limit to 10 images
+            
+            Log::info('Filtered and sorted image URLs for download', [
+                'url' => $url,
+                'total_urls' => count($imageUrls),
+                'top_3_urls_preview' => array_slice($imageUrls, 0, 3),
+            ]);
             
             foreach ($imageUrls as $imageUrl) {
                 if ($downloadedCount >= $maxImages) {
@@ -2916,24 +2967,39 @@ class YtDlpService
                 }
                 
                 try {
-                    Log::debug('Attempting to download image from extracted URL', [
+                    Log::debug('Attempting to download FULL-SIZE image from extracted URL', [
                         'url' => substr($imageUrl, 0, 100) . '...', // Truncate for logging
                         'attempt' => $downloadedCount + 1,
                     ]);
                     
                     $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
                     if ($imagePath && file_exists($imagePath)) {
-                        // Verify it's actually an image file
+                        // Verify it's actually an image file and check dimensions
                         $imageInfo = @getimagesize($imagePath);
                         if ($imageInfo !== false && in_array($imageInfo[2], [IMAGETYPE_JPEG, IMAGETYPE_PNG, IMAGETYPE_WEBP])) {
-                            $downloadedFiles[] = $imagePath;
-                            $downloadedCount++;
-                            Log::info('Image successfully downloaded from extracted URL', [
-                                'url' => substr($imageUrl, 0, 80) . '...',
-                                'file_path' => basename($imagePath),
-                                'size' => filesize($imagePath),
-                                'dimensions' => $imageInfo[0] . 'x' . $imageInfo[1],
-                            ]);
+                            $width = $imageInfo[0];
+                            $height = $imageInfo[1];
+                            $fileSize = filesize($imagePath);
+                            
+                            // Prefer larger images (full-size, not cropped thumbnails)
+                            // Skip very small images (likely thumbnails)
+                            if ($width >= 400 && $height >= 400) {
+                                $downloadedFiles[] = $imagePath;
+                                $downloadedCount++;
+                                Log::info('FULL-SIZE image successfully downloaded', [
+                                    'url' => substr($imageUrl, 0, 80) . '...',
+                                    'file_path' => basename($imagePath),
+                                    'file_size' => $fileSize,
+                                    'dimensions' => $width . 'x' . $height,
+                                    'aspect_ratio' => round($width / $height, 2),
+                                ]);
+                            } else {
+                                Log::debug('Downloaded image is too small (likely thumbnail), skipping', [
+                                    'file_path' => $imagePath,
+                                    'dimensions' => $width . 'x' . $height,
+                                ]);
+                                @unlink($imagePath);
+                            }
                         } else {
                             Log::debug('Downloaded file is not a valid image, removing', [
                                 'file_path' => $imagePath,
