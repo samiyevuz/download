@@ -2816,7 +2816,10 @@ class YtDlpService
             
             // Extract image URLs from HTML
             // Instagram embeds image URLs in JSON-LD or meta tags or script tags
+            // CRITICAL: Track display_url and candidates[0] separately (they're 99%+ original, no crop)
             $imageUrls = [];
+            $premiumDisplayUrls = []; // display_url from JSON (99%+ original, NO crop)
+            $premiumCandidateUrls = []; // candidates[0] from image_versions2 (99%+ original, NO crop)
             
             // Method 1: Extract from JSON-LD structured data
             if (preg_match_all('/<script[^>]*type=["\']application\/ld\+json["\'][^>]*>(.*?)<\/script>/is', $html, $jsonLdMatches)) {
@@ -2866,22 +2869,32 @@ class YtDlpService
                                 break;
                             }
                         }
-                        if ($value && is_string($value)) {
-                            $imageUrls[] = $value;
+                        if ($value && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
+                            $decodedUrl = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            // display_url from _sharedData is premium (99%+ original, no crop)
+                            if (str_contains($path[array_key_last($path)], 'display_url')) {
+                                $premiumDisplayUrls[] = $decodedUrl;
+                                Log::info('Found display_url from _sharedData (99%+ original, NO crop)', [
+                                    'url' => substr($decodedUrl, 0, 80) . '...',
+                                ]);
+                            } else {
+                                $imageUrls[] = $decodedUrl;
+                            }
                         }
                     }
                 }
             }
             
             // Method 5: Extract from window.__additionalDataLoaded or similar patterns
-            // display_url is usually the full-size image URL (highest priority)
+            // display_url is usually the full-size image URL (highest priority, 99%+ original, NO crop)
             if (preg_match_all('/"display_url":\s*"([^"]+)"/i', $html, $displayUrlMatches)) {
                 foreach ($displayUrlMatches[1] as $displayUrl) {
                     // Decode HTML entities
                     $displayUrl = html_entity_decode($displayUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                     if (filter_var($displayUrl, FILTER_VALIDATE_URL)) {
-                        $imageUrls[] = $displayUrl;
-                        Log::debug('Found display_url from HTML', [
+                        // display_url is premium - 99%+ original, no crop
+                        $premiumDisplayUrls[] = $displayUrl;
+                        Log::info('Found display_url from HTML (99%+ original, NO crop)', [
                             'url' => substr($displayUrl, 0, 80) . '...',
                         ]);
                     }
@@ -2917,18 +2930,30 @@ class YtDlpService
                             }
                         }
                         
-                        // candidates is an array sorted by quality (first = best quality)
+                        // candidates is an array sorted by quality (first = best quality, 99%+ original, NO crop)
                         if (is_array($candidates) && !empty($candidates)) {
-                            foreach ($candidates as $candidate) {
+                            foreach ($candidates as $index => $candidate) {
                                 if (is_array($candidate) && isset($candidate['url'])) {
-                                    $candidateUrl = $candidate['url'];
+                                    $candidateUrl = html_entity_decode($candidate['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
                                     if (filter_var($candidateUrl, FILTER_VALIDATE_URL)) {
-                                        $imageUrls[] = html_entity_decode($candidateUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                                        Log::debug('Found image URL from candidates array', [
-                                            'url' => substr($candidateUrl, 0, 80) . '...',
-                                            'width' => $candidate['width'] ?? 'unknown',
-                                            'height' => $candidate['height'] ?? 'unknown',
-                                        ]);
+                                        // First candidate (index 0) is premium - 99%+ original, no crop
+                                        if ($index === 0) {
+                                            $premiumCandidateUrls[] = $candidateUrl;
+                                            Log::info('Found candidates[0] from image_versions2 (99%+ original, NO crop)', [
+                                                'url' => substr($candidateUrl, 0, 80) . '...',
+                                                'width' => $candidate['width'] ?? 'unknown',
+                                                'height' => $candidate['height'] ?? 'unknown',
+                                            ]);
+                                        } else {
+                                            // Other candidates - still good but not premium
+                                            $imageUrls[] = $candidateUrl;
+                                            Log::debug('Found image URL from candidates array', [
+                                                'url' => substr($candidateUrl, 0, 80) . '...',
+                                                'index' => $index,
+                                                'width' => $candidate['width'] ?? 'unknown',
+                                                'height' => $candidate['height'] ?? 'unknown',
+                                            ]);
+                                        }
                                     }
                                 }
                             }
@@ -2947,10 +2972,25 @@ class YtDlpService
                             }
                         }
                         if ($value && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
-                            $imageUrls[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                            Log::debug('Found display_url from __additionalDataLoaded', [
-                                'url' => substr($value, 0, 80) . '...',
-                            ]);
+                            $decodedUrl = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            // display_url from __additionalDataLoaded is premium
+                            if (str_contains($path[array_key_last($path)], 'display_url')) {
+                                $premiumDisplayUrls[] = $decodedUrl;
+                                Log::info('Found display_url from __additionalDataLoaded (99%+ original, NO crop)', [
+                                    'url' => substr($decodedUrl, 0, 80) . '...',
+                                ]);
+                            } elseif ($path[array_key_last($path)] === 'url' && str_contains($path[array_key_last($path) - 2] ?? '', 'candidates')) {
+                                // candidates[0].url is premium
+                                $premiumCandidateUrls[] = $decodedUrl;
+                                Log::info('Found candidates[0].url from __additionalDataLoaded (99%+ original, NO crop)', [
+                                    'url' => substr($decodedUrl, 0, 80) . '...',
+                                ]);
+                            } else {
+                                $imageUrls[] = $decodedUrl;
+                                Log::debug('Found image URL from __additionalDataLoaded', [
+                                    'url' => substr($decodedUrl, 0, 80) . '...',
+                                ]);
+                            }
                         }
                     }
                 }
@@ -2984,29 +3024,55 @@ class YtDlpService
                                 foreach ($resources as $edge) {
                                     $node = $edge['node'] ?? null;
                                     if ($node && is_array($node)) {
-                                        // Get display_url or display_resources
-                                        if (isset($node['display_url'])) {
-                                            $imageUrls[] = $node['display_url'];
+                                        // Get display_url or display_resources (carousel posts)
+                                        if (isset($node['display_url']) && filter_var($node['display_url'], FILTER_VALIDATE_URL)) {
+                                            $decodedUrl = html_entity_decode($node['display_url'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                            // display_url from carousel is premium (99%+ original, no crop)
+                                            $premiumDisplayUrls[] = $decodedUrl;
+                                            Log::info('Found display_url from carousel _sharedData (99%+ original, NO crop)', [
+                                                'url' => substr($decodedUrl, 0, 80) . '...',
+                                            ]);
                                         }
                                         if (isset($node['display_resources']) && is_array($node['display_resources'])) {
-                                            foreach ($node['display_resources'] as $resource) {
-                                                if (isset($resource['src'])) {
-                                                    $imageUrls[] = $resource['src'];
+                                            foreach ($node['display_resources'] as $index => $resource) {
+                                                if (isset($resource['src']) && filter_var($resource['src'], FILTER_VALIDATE_URL)) {
+                                                    $decodedUrl = html_entity_decode($resource['src'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                                    // First resource (index 0) is premium (99%+ original, no crop)
+                                                    if ($index === 0) {
+                                                        $premiumCandidateUrls[] = $decodedUrl;
+                                                        Log::info('Found display_resources[0] from carousel _sharedData (99%+ original, NO crop)', [
+                                                            'url' => substr($decodedUrl, 0, 80) . '...',
+                                                        ]);
+                                                    } else {
+                                                        $imageUrls[] = $decodedUrl;
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             } elseif (isset($resources[0]['src'])) {
-                                // display_resources array
-                                foreach ($resources as $resource) {
+                                // display_resources array (sorted by quality, first is best)
+                                foreach ($resources as $index => $resource) {
                                     if (isset($resource['src']) && filter_var($resource['src'], FILTER_VALIDATE_URL)) {
-                                        $imageUrls[] = $resource['src'];
-                                        Log::debug('Found image URL from display_resources', [
-                                            'url' => substr($resource['src'], 0, 80) . '...',
-                                            'width' => $resource['config_width'] ?? 'unknown',
-                                            'height' => $resource['config_height'] ?? 'unknown',
-                                        ]);
+                                        $decodedUrl = html_entity_decode($resource['src'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                        // First resource (index 0) is premium (99%+ original, no crop)
+                                        if ($index === 0) {
+                                            $premiumCandidateUrls[] = $decodedUrl;
+                                            Log::info('Found display_resources[0] from _sharedData (99%+ original, NO crop)', [
+                                                'url' => substr($decodedUrl, 0, 80) . '...',
+                                                'width' => $resource['config_width'] ?? 'unknown',
+                                                'height' => $resource['config_height'] ?? 'unknown',
+                                            ]);
+                                        } else {
+                                            $imageUrls[] = $decodedUrl;
+                                            Log::debug('Found image URL from display_resources', [
+                                                'url' => substr($decodedUrl, 0, 80) . '...',
+                                                'index' => $index,
+                                                'width' => $resource['config_width'] ?? 'unknown',
+                                                'height' => $resource['config_height'] ?? 'unknown',
+                                            ]);
+                                        }
                                     }
                                 }
                             }
@@ -3119,14 +3185,15 @@ class YtDlpService
             }
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP (99%+ original)
-            // CRITICAL: Crop parameter (stp=) causes 50%+ image cropping - AVOID IT!
-            // Priority: display_url (no crop) > candidates[0] (no crop) > without stp= > with stp= (last resort)
+            // CRITICAL: Crop parameter (stp=) causes 50%+ image cropping - SKIP IT COMPLETELY!
+            // Priority: premiumDisplayUrls (display_url) > premiumCandidateUrls (candidates[0]) > goodUrls (no stp=) > cropUrls (SKIPPED)
             
             // Separate URLs by priority to avoid crop (stp= parameter)
-            $premiumUrls = []; // display_url from JSON (99%+ original, NO crop)
+            // Premium URLs are already tracked separately (display_url and candidates[0])
             $goodUrls = []; // Without stp= parameter (no crop)
-            $cropUrls = []; // WITH stp= parameter (causes 50%+ crop) - LAST RESORT ONLY
+            $cropUrls = []; // WITH stp= parameter (causes 50%+ crop) - COMPLETELY SKIPPED
             
+            // Process regular imageUrls - separate by crop parameter
             foreach ($imageUrls as $url) {
                 // REJECT thumbnail/preview URLs (too small)
                 if (str_contains($url, 'thumbnail') || 
@@ -3139,82 +3206,50 @@ class YtDlpService
                     continue; // Skip thumbnails
                 }
                 
-                // CRITICAL: Reject URLs with stp= parameter (causes severe cropping)
-                // stp= parameter means crop, which causes 50%+ image loss
+                // CRITICAL: Completely skip URLs with stp= parameter (causes 50%+ cropping)
                 $hasStpCrop = str_contains($url, 'stp=');
-                
-                // Premium URLs: display_url pattern (usually from JSON, no crop, full-size)
-                // These are extracted from "display_url" in HTML JSON, usually don't have stp=
-                if (!$hasStpCrop) {
-                    // Check if it's a large image (likely display_url)
-                    $isLargeImage = false;
-                    if (preg_match('/[?&](s(\d+)x(\d+))/i', $url, $sizeMatches)) {
-                        $width = (int)$sizeMatches[2];
-                        $height = (int)$sizeMatches[3];
-                        $size = $width * $height;
-                        // If size is 1080x1080 or larger, it's likely display_url (premium)
-                        if ($size >= 1080 * 1080) {
-                            $isLargeImage = true;
-                        } elseif ($size >= 640 * 640) {
-                            // Still good quality
-                            $isLargeImage = true;
-                        }
-                    } elseif (!str_contains($url, 's640x640') && !str_contains($url, 's320x320') && !str_contains($url, 's150x150')) {
-                        // No size parameter or large size - likely display_url (premium)
-                        $isLargeImage = true;
-                    }
-                    
-                    if ($isLargeImage && (str_contains($url, 'scontent-') || str_contains($url, 'cdninstagram.com'))) {
-                        $premiumUrls[] = $url;
-                        continue;
-                    }
-                }
-                
-                // Categorize by crop parameter
                 if ($hasStpCrop) {
-                    // URL with stp= crop parameter - causes 50%+ image loss
-                    // Only use as LAST RESORT if no other URLs work
-                    $cropUrls[] = $url;
-                } else {
-                    // URL without crop parameter - acceptable (may have small quality loss but no crop)
-                    $goodUrls[] = $url;
+                    // Skip crop URLs completely - they cause severe image loss
+                    continue;
                 }
+                
+                // URL without crop parameter - acceptable (no crop, may have small quality loss)
+                $goodUrls[] = $url;
             }
             
-            // Prioritize: premium (display_url, no crop) > good (no crop) > crop (last resort)
-            // Try premium first, then good, crop only if nothing else works
+            // Prioritize: premiumDisplayUrls (display_url) > premiumCandidateUrls (candidates[0]) > goodUrls (no stp=)
+            // COMPLETELY SKIP cropUrls (stp=) - they cause 50%+ cropping
+            $premiumUrls = array_merge($premiumDisplayUrls, $premiumCandidateUrls);
+            $premiumUrls = array_unique($premiumUrls); // Remove duplicates
             $imageUrls = array_merge($premiumUrls, $goodUrls);
             
-            // Log crop URLs but don't include them unless nothing else works
-            if (!empty($cropUrls)) {
-                Log::warning('Found URLs with crop parameter (stp=) - will only use if no other URLs work', [
-                    'url' => $url,
-                    'crop_urls_count' => count($cropUrls),
-                    'premium_urls_count' => count($premiumUrls),
-                    'good_urls_count' => count($goodUrls),
-                ]);
-            }
-            
-            Log::info('Prioritized image URLs for download', [
+            // Log URLs (crop URLs are completely skipped)
+            Log::info('Prioritized image URLs for download (99%+ original, NO crop)', [
                 'url' => $url,
-                'display_urls' => count($displayUrls),
-                'without_crop' => count($urlsWithoutCrop),
-                'with_crop' => count($urlsWithCrop),
-                'total' => count($imageUrls),
+                'premium_display_urls' => count($premiumDisplayUrls),
+                'premium_candidate_urls' => count($premiumCandidateUrls),
+                'premium_total' => count($premiumUrls),
+                'good_urls' => count($goodUrls),
+                'crop_urls_skipped' => count($cropUrls),
+                'total_urls' => count($imageUrls),
+                'priority_order' => 'premium (display_url + candidates[0]) > good (no stp=) > crop (SKIPPED)',
             ]);
             
-            // Sort URLs by size parameters to get HIGHEST QUALITY (full size, minimal crop)
-            // Priority: 1) No crop parameter, 2) Larger size, 3) Better domain
-            usort($imageUrls, function($a, $b) {
-                // First priority: URLs without crop parameter (stp=) are better
-                $aHasCrop = str_contains($a, 'stp=');
-                $bHasCrop = str_contains($b, 'stp=');
+            // Sort URLs by size parameters to get HIGHEST QUALITY (full size, no crop)
+            // NOTE: All URLs in $imageUrls are already without stp= (crop URLs are skipped)
+            // Priority: 1) Premium URLs first (already first in array), 2) Larger size, 3) Better domain
+            $premiumUrlsForSort = $premiumUrls ?? []; // For closure
+            usort($imageUrls, function($a, $b) use ($premiumUrlsForSort) {
+                // Check if URLs are in premium array (display_url or candidates[0])
+                // Premium URLs should stay first
+                $aIsPremium = in_array($a, $premiumUrlsForSort);
+                $bIsPremium = in_array($b, $premiumUrlsForSort);
                 
-                if (!$aHasCrop && $bHasCrop) {
-                    return -1; // a is better (no crop)
+                if ($aIsPremium && !$bIsPremium) {
+                    return -1; // a is better (premium)
                 }
-                if ($aHasCrop && !$bHasCrop) {
-                    return 1; // b is better (no crop)
+                if (!$aIsPremium && $bIsPremium) {
+                    return 1; // b is better (premium)
                 }
                 
                 // Both have crop or both don't - compare by size
@@ -3384,37 +3419,16 @@ class YtDlpService
                 }
             }
             
-            // LAST RESORT: If no premium/good URLs worked, try crop URLs (stp=)
-            // But warn that these may have 50%+ cropping
-            if (empty($downloadedFiles) && !empty($cropUrls) && $triedPremiumGood) {
-                Log::warning('All premium/good URLs failed, trying crop URLs (stp=) as last resort', [
+            // NOTE: Crop URLs (stp=) are COMPLETELY SKIPPED - they cause 50%+ image cropping
+            // If no premium/good URLs worked, we fail rather than using cropped images
+            if (empty($downloadedFiles)) {
+                Log::error('All premium/good URLs failed - crop URLs are skipped to avoid 50%+ cropping', [
                     'url' => $url,
-                    'crop_urls_count' => count($cropUrls),
-                    'warning' => 'Crop URLs may have 50%+ image cropping!',
+                    'premium_urls_tried' => count($premiumUrls),
+                    'good_urls_tried' => count($goodUrls),
+                    'crop_urls_skipped' => count($cropUrls),
+                    'note' => 'Crop URLs (stp=) are not used to preserve image quality (99%+ original)',
                 ]);
-                
-                foreach (array_slice($cropUrls, 0, 3) as $cropUrl) { // Try max 3 crop URLs
-                    try {
-                        $imagePath = $this->downloadImageFromUrl($cropUrl, $outputDir);
-                        if ($imagePath && file_exists($imagePath)) {
-                            $imageInfo = @getimagesize($imagePath);
-                            if ($imageInfo !== false && in_array($imageInfo[2], [IMAGETYPE_JPEG, IMAGETYPE_PNG, IMAGETYPE_WEBP])) {
-                                $width = $imageInfo[0];
-                                $height = $imageInfo[1];
-                                if ($width >= 200 && $height >= 200) {
-                                    $downloadedFiles[] = $imagePath;
-                                    Log::warning('Using cropped image (stp=) as last resort - may have significant cropping!', [
-                                        'dimensions' => $width . 'x' . $height,
-                                    ]);
-                                    break; // Got something, stop
-                                }
-                                @unlink($imagePath);
-                            }
-                        }
-                    } catch (\Exception $e) {
-                        // Continue trying
-                    }
-                }
             }
             
             if (!empty($downloadedFiles)) {
