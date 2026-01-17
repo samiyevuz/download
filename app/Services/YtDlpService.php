@@ -3396,13 +3396,54 @@ class YtDlpService
             // Re-index array after filtering
             $imageUrls = array_values($imageUrls);
             
-            if (empty($imageUrls)) {
-                Log::error('No URLs without crop parameter (stp=) found - all URLs were cropped!', [
+            // If no URLs without crop parameter found, try to remove stp= parameter from crop URLs
+            // This is a fallback - better than nothing, but may still have some cropping
+            if (empty($imageUrls) && !empty($cropUrls)) {
+                Log::warning('No URLs without crop parameter found - attempting to remove stp= from crop URLs as fallback', [
                     'url' => $url,
                     'premium_urls_count' => count($premiumUrls ?? []),
                     'good_urls_count' => count($goodUrls ?? []),
+                    'crop_urls_count' => count($cropUrls),
+                    'note' => 'Removing stp= parameter may cause 403 errors, but will try anyway',
                 ]);
-                throw new \RuntimeException('No image URLs without crop parameter found - all URLs contain stp=');
+                
+                // Try to remove stp= parameter from crop URLs
+                foreach ($cropUrls as $cropUrl) {
+                    // Remove stp= parameter from URL (may cause 403, but worth trying)
+                    $cleanUrl = preg_replace('/[?&]stp=[^&]*/i', '', $cropUrl);
+                    // Also try removing s= parameter that specifies size
+                    $cleanUrl = preg_replace('/[?&]s=\d+x\d+/i', '', $cleanUrl);
+                    
+                    // Ensure URL still has query parameters (remove stp= but keep others)
+                    if ($cleanUrl !== $cropUrl && filter_var($cleanUrl, FILTER_VALIDATE_URL)) {
+                        $imageUrls[] = $cleanUrl;
+                        Log::info('Added crop URL with stp= removed as fallback', [
+                            'original' => substr($cropUrl, 0, 80) . '...',
+                            'cleaned' => substr($cleanUrl, 0, 80) . '...',
+                            'warning' => 'May still have cropping or 403 errors',
+                        ]);
+                    } else {
+                        // If URL cleaning fails, use original crop URL as last resort
+                        $imageUrls[] = $cropUrl;
+                        Log::warning('Using crop URL as last resort (may have 50%+ cropping)', [
+                            'url' => substr($cropUrl, 0, 80) . '...',
+                            'warning' => 'Image may be significantly cropped!',
+                        ]);
+                    }
+                }
+                
+                // Re-index array
+                $imageUrls = array_values($imageUrls);
+            }
+            
+            if (empty($imageUrls)) {
+                Log::error('No image URLs found at all - cannot download image', [
+                    'url' => $url,
+                    'premium_urls_count' => count($premiumUrls ?? []),
+                    'good_urls_count' => count($goodUrls ?? []),
+                    'crop_urls_count' => count($cropUrls ?? []),
+                ]);
+                throw new \RuntimeException('No image URLs found - cannot download image');
             }
             
             Log::info('Final URL list after filtering crop URLs', [
@@ -3421,13 +3462,16 @@ class YtDlpService
                 
                 try {
                     // At this point, imageUrl should NOT have stp= parameter (already filtered)
+                    // But if it's from fallback (crop URLs with stp= removed), allow it
                     $hasCrop = str_contains($imageUrl, 'stp=');
-                    if ($hasCrop) {
-                        Log::warning('ERROR: URL with crop parameter passed filter - skipping!', [
+                    if ($hasCrop && count($premiumUrls ?? []) > 0) {
+                        // If we have premium URLs but this one has crop, skip it
+                        Log::warning('URL with crop parameter found but premium URLs available - skipping!', [
                             'url' => substr($imageUrl, 0, 80) . '...',
                         ]);
-                        continue; // Safety check - skip crop URLs
+                        continue; // Safety check - skip crop URLs if premium available
                     }
+                    // If no premium URLs and this is fallback (crop URL with stp= removed), allow it
                     
                     Log::info('Attempting to download image from extracted URL (NO crop)', [
                         'url' => substr($imageUrl, 0, 100) . '...',
@@ -3446,12 +3490,13 @@ class YtDlpService
                             $height = $imageInfo[1];
                             $fileSize = filesize($imagePath);
                             
-                            // Accept valid images (99%+ original, no crop - stp= already filtered out)
+                            // Accept valid images (99%+ original preferred, but accept fallback crop URLs if needed)
                             // Prefer larger images for better quality
                             if ($width >= 200 && $height >= 200) {
-                                // Safety check: If somehow crop parameter is still present, reject
-                                if ($hasCrop) {
-                                    Log::error('ERROR: Image downloaded with crop parameter (stp=) - rejecting!', [
+                                // If image has crop parameter, only accept if it's fallback (no premium URLs available)
+                                // Otherwise reject cropped images
+                                if ($hasCrop && count($premiumUrls ?? []) > 0) {
+                                    Log::warning('Rejecting cropped image - premium URLs available', [
                                         'dimensions' => $width . 'x' . $height,
                                         'file_path' => basename($imagePath),
                                         'url' => substr($imageUrl, 0, 80) . '...',
