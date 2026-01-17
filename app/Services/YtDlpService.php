@@ -2862,13 +2862,58 @@ class YtDlpService
             }
             
             // Method 5: Extract from window.__additionalDataLoaded or similar patterns
+            // display_url is usually the full-size image URL (highest priority)
             if (preg_match_all('/"display_url":\s*"([^"]+)"/i', $html, $displayUrlMatches)) {
-                $imageUrls = array_merge($imageUrls, $displayUrlMatches[1]);
+                foreach ($displayUrlMatches[1] as $displayUrl) {
+                    // Decode HTML entities
+                    $displayUrl = html_entity_decode($displayUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    if (filter_var($displayUrl, FILTER_VALIDATE_URL)) {
+                        $imageUrls[] = $displayUrl;
+                        Log::debug('Found display_url from HTML', [
+                            'url' => substr($displayUrl, 0, 80) . '...',
+                        ]);
+                    }
+                }
             }
             
-            // Method 6: Extract from thumbnail_url pattern
+            // Method 5b: Extract from window.__additionalDataLoaded JSON structure
+            if (preg_match('/window\.__additionalDataLoaded\s*\([^,]+,\s*({.+?})\);/is', $html, $additionalDataMatches)) {
+                $additionalData = json_decode($additionalDataMatches[1], true);
+                if ($additionalData && is_array($additionalData)) {
+                    // Navigate through additionalData to find display_url
+                    $paths = [
+                        ['items', 0, 'image_versions2', 'candidates', 0, 'url'],
+                        ['graphql', 'shortcode_media', 'display_url'],
+                        ['items', 0, 'display_url'],
+                    ];
+                    foreach ($paths as $path) {
+                        $value = $additionalData;
+                        foreach ($path as $key) {
+                            if (is_array($value) && isset($value[$key])) {
+                                $value = $value[$key];
+                            } else {
+                                $value = null;
+                                break;
+                            }
+                        }
+                        if ($value && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
+                            $imageUrls[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            Log::debug('Found display_url from __additionalDataLoaded', [
+                                'url' => substr($value, 0, 80) . '...',
+                            ]);
+                        }
+                    }
+                }
+            }
+            
+            // Method 6: Extract from thumbnail_url pattern (lower priority)
             if (preg_match_all('/"thumbnail_url":\s*"([^"]+)"/i', $html, $thumbMatches)) {
-                $imageUrls = array_merge($imageUrls, $thumbMatches[1]);
+                foreach ($thumbMatches[1] as $thumbUrl) {
+                    $thumbUrl = html_entity_decode($thumbUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    if (filter_var($thumbUrl, FILTER_VALIDATE_URL)) {
+                        $imageUrls[] = $thumbUrl;
+                    }
+                }
             }
             
             // Method 7: Extract from srcset attributes (Instagram uses these)
@@ -2966,14 +3011,15 @@ class YtDlpService
             
             // Download images from extracted URLs - prioritize FULL SIZE, NO CROP
             // IMPORTANT: Do NOT remove crop parameters from URLs - they are required for Instagram CDN
-            // Instead, prioritize URLs without crop parameters or with larger sizes
+            // Try ALL URLs - prioritize best ones, but fallback to any that works
             
-            // Separate URLs: those with crop (stp=) and those without
-            $urlsWithCrop = [];
+            // Separate URLs by priority: display_url (best), without crop, with crop
+            $displayUrls = []; // display_url from JSON (usually full-size, no crop)
             $urlsWithoutCrop = [];
+            $urlsWithCrop = [];
             
             foreach ($imageUrls as $url) {
-                // REJECT thumbnail/preview URLs
+                // REJECT thumbnail/preview URLs (too small)
                 if (str_contains($url, 'thumbnail') || 
                     str_contains($url, 'preview') || 
                     str_contains($url, 'thumb') ||
@@ -2984,6 +3030,24 @@ class YtDlpService
                     continue; // Skip thumbnails
                 }
                 
+                // Check if this looks like a display_url (usually from JSON, full-size)
+                // display_url usually doesn't have stp= and has larger dimensions
+                if (!str_contains($url, 'stp=') && 
+                    (str_contains($url, 'scontent-') || str_contains($url, 'cdninstagram.com'))) {
+                    // Check size parameter - if it's large, it's likely display_url
+                    if (preg_match('/[?&](s(\d+)x(\d+))/i', $url, $sizeMatches)) {
+                        $size = (int)$sizeMatches[2] * (int)$sizeMatches[3];
+                        if ($size >= 640 * 640) { // 640x640 or larger
+                            $displayUrls[] = $url;
+                            continue;
+                        }
+                    } elseif (!str_contains($url, 's640x640') && !str_contains($url, 's320x320')) {
+                        // No size parameter or large size - likely display_url
+                        $displayUrls[] = $url;
+                        continue;
+                    }
+                }
+                
                 // Check if URL has crop parameter
                 if (str_contains($url, 'stp=')) {
                     $urlsWithCrop[] = $url;
@@ -2992,21 +3056,16 @@ class YtDlpService
                 }
             }
             
-            // Prioritize URLs without crop parameters first
-            // If no URLs without crop, use URLs with crop but prefer larger sizes
-            if (!empty($urlsWithoutCrop)) {
-                $imageUrls = $urlsWithoutCrop;
-                Log::info('Using URLs without crop parameters', [
-                    'url' => $url,
-                    'count' => count($urlsWithoutCrop),
-                ]);
-            } else {
-                $imageUrls = $urlsWithCrop;
-                Log::info('No URLs without crop found, using URLs with crop (will sort by size)', [
-                    'url' => $url,
-                    'count' => count($urlsWithCrop),
-                ]);
-            }
+            // Combine all URLs with priority: display_url > without crop > with crop
+            $imageUrls = array_merge($displayUrls, $urlsWithoutCrop, $urlsWithCrop);
+            
+            Log::info('Prioritized image URLs for download', [
+                'url' => $url,
+                'display_urls' => count($displayUrls),
+                'without_crop' => count($urlsWithoutCrop),
+                'with_crop' => count($urlsWithCrop),
+                'total' => count($imageUrls),
+            ]);
             
             // Sort URLs by size parameters to get HIGHEST QUALITY (full size, minimal crop)
             // Priority: 1) No crop parameter, 2) Larger size, 3) Better domain
@@ -3087,15 +3146,18 @@ class YtDlpService
                 'top_3_urls_preview' => array_slice($imageUrls, 0, 3),
             ]);
             
+            // Try ALL URLs until one succeeds - prioritize best, but accept any that works
             foreach ($imageUrls as $imageUrl) {
                 if ($downloadedCount >= $maxImages) {
                     break;
                 }
                 
                 try {
-                    Log::debug('Attempting to download FULL-SIZE image from extracted URL', [
+                    Log::info('Attempting to download image from extracted URL', [
                         'url' => substr($imageUrl, 0, 100) . '...', // Truncate for logging
                         'attempt' => $downloadedCount + 1,
+                        'total_urls' => count($imageUrls),
+                        'has_crop' => str_contains($imageUrl, 'stp=') ? 'yes' : 'no',
                     ]);
                     
                     $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
@@ -3107,34 +3169,48 @@ class YtDlpService
                             $height = $imageInfo[1];
                             $fileSize = filesize($imagePath);
                             
-                            // Prefer larger images (full-size, not cropped thumbnails)
-                            // Skip very small images (likely thumbnails)
-                            if ($width >= 400 && $height >= 400) {
+                            // Accept ANY valid image (even if small) - better than nothing
+                            // But prefer larger images
+                            if ($width >= 200 && $height >= 200) {
                                 $downloadedFiles[] = $imagePath;
                                 $downloadedCount++;
-                                Log::info('FULL-SIZE image successfully downloaded', [
+                                Log::info('Image successfully downloaded', [
                                     'url' => substr($imageUrl, 0, 80) . '...',
                                     'file_path' => basename($imagePath),
                                     'file_size' => $fileSize,
                                     'dimensions' => $width . 'x' . $height,
                                     'aspect_ratio' => round($width / $height, 2),
+                                    'has_crop_param' => str_contains($imageUrl, 'stp=') ? 'yes' : 'no',
                                 ]);
+                                
+                                // If we got a good image, we can stop trying more URLs
+                                // But continue if image is small (might be thumbnail)
+                                if ($width >= 640 && $height >= 640) {
+                                    Log::info('Got high-quality image, stopping URL attempts', [
+                                        'dimensions' => $width . 'x' . $height,
+                                    ]);
+                                    break; // Got good image, stop trying
+                                }
                             } else {
-                                Log::debug('Downloaded image is too small (likely thumbnail), skipping', [
+                                Log::debug('Downloaded image is too small, trying next URL', [
                                     'file_path' => $imagePath,
                                     'dimensions' => $width . 'x' . $height,
                                 ]);
                                 @unlink($imagePath);
                             }
                         } else {
-                            Log::debug('Downloaded file is not a valid image, removing', [
+                            Log::debug('Downloaded file is not a valid image, trying next URL', [
                                 'file_path' => $imagePath,
                             ]);
                             @unlink($imagePath);
                         }
+                    } else {
+                        Log::debug('Failed to download from URL, trying next', [
+                            'url' => substr($imageUrl, 0, 80) . '...',
+                        ]);
                     }
                 } catch (\Exception $e) {
-                    Log::debug('Failed to download image from extracted URL', [
+                    Log::debug('Exception downloading image from URL, trying next', [
                         'url' => substr($imageUrl, 0, 100) . '...',
                         'error' => $e->getMessage(),
                     ]);
