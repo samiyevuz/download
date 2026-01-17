@@ -1771,8 +1771,12 @@ class YtDlpService
         $hasSessionId = $cookieContent && str_contains($cookieContent, 'sessionid');
         $hasInstagramDomain = $cookieContent && preg_match('/\.instagram\.com|instagram\.com/i', $cookieContent);
         
-        // Count Instagram cookies
+        // Count Instagram cookies and check expiration
         $instagramCookieCount = 0;
+        $validSessionIdCookie = false;
+        $expiredCookieCount = 0;
+        $currentTimestamp = time();
+        
         if ($cookieContent) {
             $lines = explode("\n", $cookieContent);
             foreach ($lines as $line) {
@@ -1784,6 +1788,28 @@ class YtDlpService
                 $parts = explode("\t", $line);
                 if (count($parts) >= 7 && str_contains(strtolower($parts[0]), 'instagram.com')) {
                     $instagramCookieCount++;
+                    $expiration = isset($parts[4]) ? (int)$parts[4] : 0;
+                    $cookieName = $parts[5] ?? '';
+                    
+                    // Check if sessionid cookie is valid (not expired)
+                    if (strtolower($cookieName) === 'sessionid') {
+                        // Expiration: 0 means session cookie (valid), otherwise check timestamp
+                        if ($expiration == 0 || $expiration > $currentTimestamp) {
+                            $validSessionIdCookie = true;
+                        } else {
+                            // Sessionid expired
+                            Log::warning('sessionid cookie expired', [
+                                'expiration' => $expiration,
+                                'current_time' => $currentTimestamp,
+                                'expired_at' => date('Y-m-d H:i:s', $expiration),
+                            ]);
+                        }
+                    }
+                    
+                    // Count expired cookies
+                    if ($expiration > 0 && $expiration <= $currentTimestamp) {
+                        $expiredCookieCount++;
+                    }
                 }
             }
         }
@@ -1795,8 +1821,10 @@ class YtDlpService
             'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
             'is_netscape_format' => $isNetscapeFormat,
             'has_sessionid' => $hasSessionId,
+            'valid_sessionid_cookie' => $validSessionIdCookie,
             'has_instagram_domain' => $hasInstagramDomain,
             'instagram_cookie_count' => $instagramCookieCount,
+            'expired_cookie_count' => $expiredCookieCount,
         ]);
         
         // Warn if cookie file doesn't look like Netscape format
@@ -1811,12 +1839,27 @@ class YtDlpService
             Log::warning('Cookie file missing sessionid (critical for Instagram authentication)', [
                 'cookie_path' => basename($cookiesPath),
             ]);
+        } elseif (!$validSessionIdCookie) {
+            Log::error('sessionid cookie is expired (critical - Instagram will reject login)', [
+                'cookie_path' => basename($cookiesPath),
+                'note' => 'Please update cookie file with fresh cookies from Instagram',
+            ]);
+            // Continue anyway - maybe other cookies will work
         }
         
         if (!$hasInstagramDomain || $instagramCookieCount === 0) {
             Log::warning('Cookie file missing Instagram.com cookies (critical for authentication)', [
                 'cookie_path' => basename($cookiesPath),
                 'instagram_cookie_count' => $instagramCookieCount,
+            ]);
+        }
+        
+        if ($expiredCookieCount > 0) {
+            Log::warning('Some Instagram cookies are expired', [
+                'cookie_path' => basename($cookiesPath),
+                'expired_count' => $expiredCookieCount,
+                'total_instagram_cookies' => $instagramCookieCount,
+                'note' => 'Expired cookies may cause authentication failures',
             ]);
         }
         
@@ -2394,11 +2437,24 @@ class YtDlpService
                 $cookiePath = base_path($cookiePath);
             }
             $cookiePath = realpath($cookiePath) ?: $cookiePath;
+            
+            // CRITICAL: Verify cookie path is readable and valid
+            if (!file_exists($cookiePath) || !is_readable($cookiePath)) {
+                Log::error('Cookie file not accessible', [
+                    'cookie_path' => $cookiePath,
+                    'file_exists' => file_exists($cookiePath),
+                    'is_readable' => is_readable($cookiePath),
+                ]);
+                throw new \RuntimeException("Cookie file not accessible: {$cookiePath}");
+            }
+            
             $arguments[$cookieIndex + 1] = $cookiePath;
             
             Log::debug('Cookie path ensured absolute for yt-dlp', [
                 'cookie_path' => $cookiePath,
                 'file_exists' => file_exists($cookiePath),
+                'file_size' => filesize($cookiePath),
+                'is_readable' => is_readable($cookiePath),
             ]);
         }
         
