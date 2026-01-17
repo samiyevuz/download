@@ -387,6 +387,120 @@ class TelegramService
     }
 
     /**
+     * Send document (image as document - no resize/crop)
+     *
+     * @param int|string $chatId
+     * @param string $filePath
+     * @param string|null $caption
+     * @param int|null $replyToMessageId
+     * @return bool
+     */
+    public function sendDocument(int|string $chatId, string $filePath, ?string $caption = null, ?int $replyToMessageId = null): bool
+    {
+        try {
+            // 1. File existence check
+            if (!file_exists($filePath)) {
+                Log::error('Document file does not exist', ['path' => $filePath]);
+                return false;
+            }
+
+            // 2. Check file size (Telegram limit: 50MB for documents)
+            $fileSize = filesize($filePath);
+            $maxFileSize = 50 * 1024 * 1024; // 50MB
+            
+            if ($fileSize > $maxFileSize) {
+                Log::warning('Document file too large for Telegram', [
+                    'path' => $filePath,
+                    'size' => $fileSize,
+                    'size_mb' => round($fileSize / 1024 / 1024, 2),
+                ]);
+                return false;
+            }
+
+            // 3. Convert webp to jpg ONLY (keep original size, no resize/crop)
+            $finalFilePath = $filePath;
+            $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+            if ($extension === 'webp') {
+                Log::debug('Converting WebP to JPG before sending as document', ['path' => basename($filePath)]);
+                $convertedPath = $this->convertWebpToJpg($filePath);
+                if ($convertedPath !== null && file_exists($convertedPath)) {
+                    $finalFilePath = $convertedPath;
+                    Log::info('Using converted JPG instead of WebP for document', [
+                        'original' => basename($filePath),
+                        'converted' => basename($convertedPath),
+                    ]);
+                } else {
+                    Log::warning('Failed to convert webp to jpg, using original', [
+                        'path' => $filePath,
+                        'converted_path' => $convertedPath,
+                    ]);
+                    // Keep original path - Telegram might accept webp
+                }
+            }
+
+            // 4. Use file handle for memory efficiency
+            $fileHandle = fopen($finalFilePath, 'r');
+            if ($fileHandle === false) {
+                Log::error('Failed to open document file', ['path' => $finalFilePath]);
+                return false;
+            }
+
+            try {
+                $response = Http::timeout(60)->attach(
+                    'document',
+                    $fileHandle,
+                    basename($finalFilePath)
+                )->post("{$this->apiUrl}{$this->botToken}/sendDocument", [
+                    'chat_id' => $chatId,
+                    'caption' => $caption,
+                    'parse_mode' => 'HTML',
+                    'reply_to_message_id' => $replyToMessageId,
+                ]);
+
+                if (!$response->successful()) {
+                    $responseBody = $response->body();
+                    $responseData = $response->json();
+                    
+                    Log::error('Telegram API error', [
+                        'method' => 'sendDocument',
+                        'chat_id' => $chatId,
+                        'status' => $response->status(),
+                        'body' => $responseBody,
+                        'response_data' => $responseData,
+                    ]);
+                    
+                    return false;
+                }
+
+                Log::info('Document sent successfully', [
+                    'chat_id' => $chatId,
+                    'document' => basename($finalFilePath),
+                ]);
+                
+                return true;
+            } finally {
+                // Always close file handle
+                if (isset($fileHandle) && is_resource($fileHandle)) {
+                    fclose($fileHandle);
+                }
+                
+                // Clean up converted file if different from original
+                if ($finalFilePath !== $filePath && file_exists($finalFilePath)) {
+                    @unlink($finalFilePath);
+                    Log::debug('Cleaned up converted document file', ['path' => basename($finalFilePath)]);
+                }
+            }
+        } catch (\Exception $e) {
+            Log::error('Failed to send Telegram document', [
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Send video
      *
      * @param int|string $chatId

@@ -298,85 +298,45 @@ class DownloadMediaJob implements ShouldQueue
                     'image_paths' => array_map('basename', $images),
                 ]);
                 
-                // If multiple images, send as media group (max 10)
-                if (count($images) > 1) {
-                    $success = $telegramService->sendMediaGroup(
-                        $this->chatId,
-                        array_slice($images, 0, 10),
-                        $caption
-                    );
+                // Send all images as documents (no resize/crop, original size preserved)
+                // Send images one by one as documents to preserve original quality
+                $successCount = 0;
+                foreach ($images as $index => $imagePath) {
+                    // First image gets caption, others don't
+                    $imageCaption = ($index === 0) ? $caption : null;
                     
-                    if (!$success) {
-                        Log::warning('Failed to send media group, trying individual photos', [
-                            'chat_id' => $this->chatId,
-                            'images_count' => count($images),
-                        ]);
-                        
-                        // Fallback: send images individually
-                        $individualSuccess = false;
-                        foreach (array_slice($images, 0, 10) as $index => $imagePath) {
-                            $photoCaption = ($index === 0) ? $caption : null;
-                            if ($telegramService->sendPhoto(
-                                $this->chatId,
-                                $imagePath,
-                                $photoCaption,
-                                $this->messageId
-                            )) {
-                                $individualSuccess = true;
-                            }
-                        }
-                        
-                        // If all individual sends failed, it's likely a permission issue
-                        if (!$individualSuccess) {
-                            $errorMessages = [
-                                'uz' => "❌ <b>Rasmlar yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling.",
-                                'ru' => "❌ <b>Не удалось отправить изображения</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы.",
-                                'en' => "❌ <b>Failed to send photos</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin.",
-                            ];
-                            
-                            $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
-                            $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
-                        }
-                    }
-                    
-                    // If more than 10 images, send remaining individually
-                    if (count($images) > 10) {
-                        foreach (array_slice($images, 10) as $imagePath) {
-                            $telegramService->sendPhoto(
-                                $this->chatId,
-                                $imagePath,
-                                null,
-                                $this->messageId
-                            );
-                        }
-                    }
-                } else {
-                    // Single image
-                    $success = $telegramService->sendPhoto(
+                    if ($telegramService->sendDocument(
                         $this->chatId,
-                        $images[0],
-                        $caption,
+                        $imagePath,
+                        $imageCaption,
                         $this->messageId
-                    );
-                    
-                    if (!$success) {
-                        Log::error('Failed to send single photo', [
+                    )) {
+                        $successCount++;
+                    } else {
+                        Log::warning('Failed to send image as document', [
                             'chat_id' => $this->chatId,
-                            'image_path' => $images[0],
-                            'file_exists' => file_exists($images[0]),
-                            'file_size' => file_exists($images[0]) ? filesize($images[0]) : null,
+                            'image_path' => $imagePath,
+                            'index' => $index,
                         ]);
-                        
-                        // Check if it's a permission issue in group
-                        $errorMessages = [
-                            'uz' => "❌ <b>Rasm yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling.",
-                            'ru' => "❌ <b>Не удалось отправить изображение</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы.",
-                            'en' => "❌ <b>Failed to send photo</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin.",
-                        ];
-                        
-                        $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
-                        $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
                     }
+                }
+                
+                // If no images were sent successfully, show error
+                if ($successCount === 0) {
+                    $errorMessages = [
+                        'uz' => "❌ <b>Rasmlar yuborib bo'lmadi</b>\n\n⚠️ Bot guruhda admin bo'lishi yoki 'Send Messages' permission bo'lishi kerak.\n\n💡 Guruh adminiga murojaat qiling.",
+                        'ru' => "❌ <b>Не удалось отправить изображения</b>\n\n⚠️ Бот должен быть администратором группы или иметь разрешение 'Send Messages'.\n\n💡 Обратитесь к администратору группы.",
+                        'en' => "❌ <b>Failed to send images</b>\n\n⚠️ Bot must be admin or have 'Send Messages' permission in the group.\n\n💡 Please contact group admin.",
+                    ];
+                    
+                    $errorMessage = $errorMessages[$this->language] ?? $errorMessages['en'];
+                    $telegramService->sendMessage($this->chatId, $errorMessage, $this->messageId);
+                } else {
+                    Log::info('Images sent as documents', [
+                        'chat_id' => $this->chatId,
+                        'total_images' => count($images),
+                        'success_count' => $successCount,
+                    ]);
                 }
             } else {
                 Log::warning('No images found after download', [
