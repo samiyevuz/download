@@ -427,17 +427,11 @@ class TelegramService
                 }
             }
 
-            // 4. Use file handle for memory efficiency
-            $fileHandle = fopen($finalFilePath, 'r');
-            if ($fileHandle === false) {
-                Log::error('Failed to open document file', ['path' => $finalFilePath]);
-                return false;
-            }
-
+            // 4. Send document using file_get_contents (no resize/compress - original quality)
             try {
                 $response = Http::timeout(60)->attach(
                     'document',
-                    $fileHandle,
+                    file_get_contents($finalFilePath),
                     basename($finalFilePath)
                 )->post("{$this->apiUrl}{$this->botToken}/sendDocument", [
                     'chat_id' => $chatId,
@@ -468,11 +462,6 @@ class TelegramService
                 
                 return true;
             } finally {
-                // Always close file handle
-                if (isset($fileHandle) && is_resource($fileHandle)) {
-                    fclose($fileHandle);
-                }
-                
                 // Clean up converted file if different from original
                 if ($finalFilePath !== $filePath && file_exists($finalFilePath)) {
                     @unlink($finalFilePath);
