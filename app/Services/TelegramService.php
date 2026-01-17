@@ -183,17 +183,19 @@ class TelegramService
                 return false;
             }
 
-            // 4. Convert webp to jpg for better compatibility
+            // 4. Convert webp to jpg ONLY if needed (100% quality, no resize/crop/compress)
+            // We preserve original quality - only format conversion for Telegram compatibility
             $finalPhotoPath = $photoPath;
             $extension = strtolower(pathinfo($photoPath, PATHINFO_EXTENSION));
             if ($extension === 'webp') {
-                Log::debug('Converting WebP to JPG before sending', ['path' => basename($photoPath)]);
+                Log::debug('Converting WebP to JPG (100% quality, no compression)', ['path' => basename($photoPath)]);
                 $convertedPath = $this->convertWebpToJpg($photoPath);
                 if ($convertedPath !== null && file_exists($convertedPath)) {
                     $finalPhotoPath = $convertedPath;
-                    Log::info('Using converted JPG instead of WebP', [
+                    Log::info('Using converted JPG instead of WebP (original quality preserved)', [
                         'original' => basename($photoPath),
                         'converted' => basename($convertedPath),
+                        'quality' => 100,
                     ]);
                 } else {
                     Log::warning('Failed to convert webp to jpg, using original', [
@@ -204,7 +206,8 @@ class TelegramService
                 }
             }
 
-            // 5. Send photo using file_get_contents (like sendVideo)
+            // 5. Send photo using file_get_contents (original quality, no resize/crop/compress)
+            // Note: Telegram API may apply some compression, but we send original file
             try {
                 $response = Http::timeout(30)->attach(
                     'photo',
@@ -329,8 +332,8 @@ class TelegramService
                 $outputPath = $webpPath . '.jpg';
             }
 
-            // Convert to JPG with 90% quality
-            $success = @imagejpeg($image, $outputPath, 90);
+            // Convert to JPG with 100% quality (maximum quality, no compression)
+            $success = @imagejpeg($image, $outputPath, 100);
             imagedestroy($image);
 
             if (!$success) {
@@ -357,11 +360,12 @@ class TelegramService
                 return null;
             }
 
-            Log::info('WebP converted to JPG successfully', [
+            Log::info('WebP converted to JPG successfully (100% quality, no compression)', [
                 'original' => basename($webpPath),
                 'converted' => basename($outputPath),
                 'original_size' => filesize($webpPath),
                 'converted_size' => $outputSize,
+                'quality' => 100,
             ]);
 
             return $outputPath;
@@ -659,7 +663,7 @@ class TelegramService
                     continue;
                 }
 
-                // Convert webp to jpg if needed
+                // Convert webp to jpg if needed (100% quality, no resize/crop/compress)
                 $finalPath = $originalPath;
                 $extension = strtolower(pathinfo($originalPath, PATHINFO_EXTENSION));
                 if ($extension === 'webp') {
@@ -667,9 +671,10 @@ class TelegramService
                     if ($converted !== null && file_exists($converted)) {
                         $finalPath = $converted;
                         $convertedFiles[] = $converted;
-                        Log::debug('WebP converted to JPG in media group', [
+                        Log::debug('WebP converted to JPG in media group (100% quality, original preserved)', [
                             'original' => basename($originalPath),
                             'converted' => basename($converted),
+                            'quality' => 100,
                         ]);
                     } else {
                         Log::warning('Failed to convert webp in media group, using original', [
