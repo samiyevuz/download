@@ -2872,14 +2872,54 @@ class YtDlpService
                 }
             }
             
-            // Method 2: Extract from meta property="og:image"
+            // Method 2: Extract from meta property="og:image" (usually contains actual post image)
             if (preg_match_all('/<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $ogMatches)) {
-                $imageUrls = array_merge($imageUrls, $ogMatches[1]);
+                foreach ($ogMatches[1] as $ogUrl) {
+                    $decodedOgUrl = html_entity_decode($ogUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    
+                    // CRITICAL: Skip rsrc.php/static URLs (icons/logos, NOT post images)
+                    if (str_contains($decodedOgUrl, '/rsrc.php/') || 
+                        str_contains($decodedOgUrl, 'static.cdninstagram.com') ||
+                        str_contains($decodedOgUrl, 'icon') ||
+                        str_contains($decodedOgUrl, 'logo')) {
+                        Log::debug('Skipping og:image URL (icon/logo, not post image)', [
+                            'url' => substr($decodedOgUrl, 0, 80) . '...',
+                        ]);
+                        continue;
+                    }
+                    
+                    // og:image usually contains actual post image - add to premium if valid
+                    if (filter_var($decodedOgUrl, FILTER_VALIDATE_URL)) {
+                        // Prioritize scontent- URLs (Instagram CDN for post images)
+                        if (str_contains($decodedOgUrl, 'scontent-')) {
+                            $premiumDisplayUrls[] = $decodedOgUrl;
+                            Log::info('Found og:image URL (scontent-, premium quality)', [
+                                'url' => substr($decodedOgUrl, 0, 80) . '...',
+                            ]);
+                        } else {
+                            $imageUrls[] = $decodedOgUrl;
+                        }
+                    }
+                }
             }
             
             // Method 3: Extract from meta name="twitter:image"
             if (preg_match_all('/<meta[^>]*name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)["\']/i', $html, $twitterMatches)) {
-                $imageUrls = array_merge($imageUrls, $twitterMatches[1]);
+                foreach ($twitterMatches[1] as $twitterUrl) {
+                    $decodedTwitterUrl = html_entity_decode($twitterUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    
+                    // CRITICAL: Skip rsrc.php/static URLs (icons/logos, NOT post images)
+                    if (str_contains($decodedTwitterUrl, '/rsrc.php/') || 
+                        str_contains($decodedTwitterUrl, 'static.cdninstagram.com') ||
+                        str_contains($decodedTwitterUrl, 'icon') ||
+                        str_contains($decodedTwitterUrl, 'logo')) {
+                        continue;
+                    }
+                    
+                    if (filter_var($decodedTwitterUrl, FILTER_VALIDATE_URL)) {
+                        $imageUrls[] = $decodedTwitterUrl;
+                    }
+                }
             }
             
             // Method 4: Extract from script tags with window._sharedData
@@ -3166,10 +3206,22 @@ class YtDlpService
             }
             
             // Method 8: Extract from any Instagram CDN URLs directly in HTML
-            // BUT: Skip URLs with stp= parameter (crop parameter) - they cause 50%+ cropping
+            // BUT: Skip URLs with stp= parameter (crop) AND rsrc.php/static URLs (icons, not post images)
             if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp))/i', $html, $cdnMatches)) {
                 foreach ($cdnMatches[1] as $cdnUrl) {
                     $decodedUrl = html_entity_decode($cdnUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    
+                    // CRITICAL: Skip rsrc.php/static URLs (icons/logos, NOT post images)
+                    if (str_contains($decodedUrl, '/rsrc.php/') || 
+                        str_contains($decodedUrl, 'static.cdninstagram.com') ||
+                        str_contains($decodedUrl, 'icon') ||
+                        str_contains($decodedUrl, 'logo')) {
+                        Log::debug('Skipping CDN URL (icon/logo, not post image)', [
+                            'url' => substr($decodedUrl, 0, 80) . '...',
+                        ]);
+                        continue;
+                    }
+                    
                     // CRITICAL: Skip URLs with stp= parameter (crop parameter)
                     if (!str_contains($decodedUrl, 'stp=')) {
                         $imageUrls[] = $decodedUrl;
@@ -3284,16 +3336,54 @@ class YtDlpService
                     'html_length' => strlen($html),
                 ]);
                 
-                // Fallback: Try to extract ANY image URL from HTML (even with stp=)
-                // This is last resort - better to have a cropped image than none
-                if (preg_match_all('/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i', $html, $fallbackMatches)) {
-                    foreach ($fallbackMatches[1] as $fallbackUrl) {
-                        $decodedFallbackUrl = html_entity_decode($fallbackUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                        if (filter_var($decodedFallbackUrl, FILTER_VALIDATE_URL)) {
-                            $imageUrls[] = $decodedFallbackUrl;
-                            Log::info('Found image URL via fallback method', [
-                                'url' => substr($decodedFallbackUrl, 0, 80) . '...',
-                            ]);
+                // Fallback: Try to extract image URLs from HTML - prioritize scontent- URLs (real post images)
+                // CRITICAL: Skip rsrc.php/static URLs (icons/logos, not post images)
+                // Try multiple patterns to find actual post image URLs
+                $fallbackPatterns = [
+                    // Pattern 1: scontent- URLs (Instagram CDN for post images)
+                    '/(https?:\/\/[^"\'\s]*scontent-[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
+                    // Pattern 2: /v/t51./ or /v/t52./ or /v/t64./ URLs (Instagram image format)
+                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/v\/t\d+\.[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
+                    // Pattern 3: /scontent/ path URLs
+                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)\/scontent\/[^"\'\s]*\.(jpg|jpeg|png|webp)[^"\'\s]*)/i',
+                    // Pattern 4: Any CDN URL with image extension (but not rsrc.php/static)
+                    '/(https?:\/\/[^"\'\s]+\.(cdninstagram\.com|fbcdn\.net)[^"\'\s]*\.(jpg|jpeg|png|webp)(\?[^"\'\s]*)?)/i',
+                ];
+                
+                foreach ($fallbackPatterns as $patternIndex => $pattern) {
+                    if (preg_match_all($pattern, $html, $fallbackMatches)) {
+                        foreach ($fallbackMatches[1] as $fallbackUrl) {
+                            $decodedFallbackUrl = html_entity_decode($fallbackUrl, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            
+                            // CRITICAL: Skip rsrc.php/static URLs (icons, not post images)
+                            if (str_contains($decodedFallbackUrl, '/rsrc.php/') || 
+                                str_contains($decodedFallbackUrl, 'static.cdninstagram.com') ||
+                                str_contains($decodedFallbackUrl, 'icon') ||
+                                str_contains($decodedFallbackUrl, 'logo') ||
+                                str_contains($decodedFallbackUrl, 'favicon')) {
+                                continue; // Skip icon/logo URLs
+                            }
+                            
+                            if (filter_var($decodedFallbackUrl, FILTER_VALIDATE_URL)) {
+                                $imageUrls[] = $decodedFallbackUrl;
+                                Log::info('Found image URL via fallback method', [
+                                    'url' => substr($decodedFallbackUrl, 0, 80) . '...',
+                                    'pattern_index' => $patternIndex + 1,
+                                ]);
+                                
+                                // If we found scontent- URL (high priority), break early
+                                if (str_contains($decodedFallbackUrl, 'scontent-')) {
+                                    Log::info('Found high-priority scontent- URL, stopping fallback search', [
+                                        'url' => substr($decodedFallbackUrl, 0, 80) . '...',
+                                    ]);
+                                    break 2; // Break both loops
+                                }
+                            }
+                        }
+                        
+                        // If we found URLs with pattern 1-3 (high priority patterns), stop
+                        if (!empty($imageUrls) && $patternIndex < 3) {
+                            break;
                         }
                     }
                 }
