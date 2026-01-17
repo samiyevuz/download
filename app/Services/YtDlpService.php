@@ -1107,7 +1107,7 @@ class YtDlpService
                         $downloadedFiles = [];
                         foreach (array_unique($imageUrls) as $imageUrl) {
                             try {
-                                $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
+                                $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir, $url);
                                 if ($imagePath && file_exists($imagePath)) {
                                     $downloadedFiles[] = $imagePath;
                                 }
@@ -2519,7 +2519,7 @@ class YtDlpService
      * @param string $outputDir
      * @return string|null Downloaded file path or null on failure
      */
-    private function downloadImageFromUrl(string $imageUrl, string $outputDir): ?string
+    private function downloadImageFromUrl(string $imageUrl, string $outputDir, ?string $originalPostUrl = null): ?string
     {
         try {
             // Generate unique filename
@@ -2534,18 +2534,34 @@ class YtDlpService
             $filename = uniqid('img_', true) . '.' . $extension;
             $filePath = $outputDir . '/' . $filename;
             
+            // Determine Referer: use original post URL if available, otherwise default to Instagram homepage
+            // CRITICAL: Instagram CDN requires correct Referer to avoid 403 errors
+            $referer = 'https://www.instagram.com/';
+            if ($originalPostUrl && filter_var($originalPostUrl, FILTER_VALIDATE_URL)) {
+                // Use the original post URL as Referer (Instagram CDN expects this)
+                $referer = $originalPostUrl;
+            } elseif (str_contains($imageUrl, 'instagram.com')) {
+                // Extract post ID from image URL if possible
+                // Instagram CDN URLs sometimes contain post references
+                $referer = 'https://www.instagram.com/';
+            }
+            
             // Prepare headers with cookies for Instagram CDN
+            // IMPORTANT: Use correct Referer to match Instagram CDN expectations
             $headers = [
                 'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                'Referer: https://www.instagram.com/',
+                'Referer: ' . $referer,
                 'Accept: image/webp,image/apng,image/*,*/*;q=0.8',
                 'Accept-Language: en-US,en;q=0.9',
+                'Accept-Encoding: identity', // Disable compression to avoid issues
+                'Origin: https://www.instagram.com',
             ];
             
             // Add cookies if available (for Instagram CDN)
             $cookiesPaths = $this->getInstagramCookiesPaths();
             $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
             
+            $cookieString = '';
             if ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
                 // Parse cookies from Netscape format
                 $cookiesContent = @file_get_contents($cookiesPath);
@@ -2564,10 +2580,12 @@ class YtDlpService
                         }
                     }
                     if (!empty($cookiePairs)) {
-                        $headers[] = 'Cookie: ' . implode('; ', $cookiePairs);
+                        $cookieString = implode('; ', $cookiePairs);
+                        $headers[] = 'Cookie: ' . $cookieString;
                         Log::debug('Added cookies to image download request', [
                             'url' => substr($imageUrl, 0, 80) . '...',
                             'cookies_count' => count($cookiePairs),
+                            'referer' => $referer,
                         ]);
                     }
                 }
@@ -2607,11 +2625,13 @@ class YtDlpService
                 }
                 
                 // Add proper headers for Instagram CDN (to avoid 403 errors)
+                // CRITICAL: Use correct Referer matching the original post URL
                 $curlHeaders = array_merge($curlHeaders, [
                     'Accept: image/webp,image/apng,image/*,*/*;q=0.8',
                     'Accept-Language: en-US,en;q=0.9',
-                    'Referer: https://www.instagram.com/',
+                    'Referer: ' . $referer,
                     'Origin: https://www.instagram.com',
+                    'Accept-Encoding: identity', // Disable compression
                 ]);
                 
                 curl_setopt_array($ch, [
@@ -3481,7 +3501,7 @@ class YtDlpService
                         'priority' => in_array($imageUrl, $premiumUrls ?? []) ? 'premium (display_url/candidates[0])' : 'good (no stp=)',
                     ]);
                     
-                    $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
+                    $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir, $url);
                     if ($imagePath && file_exists($imagePath)) {
                         // Verify it's actually an image file and check dimensions
                         $imageInfo = @getimagesize($imagePath);
