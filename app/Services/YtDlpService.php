@@ -2534,14 +2534,50 @@ class YtDlpService
             $filename = uniqid('img_', true) . '.' . $extension;
             $filePath = $outputDir . '/' . $filename;
             
+            // Prepare headers with cookies for Instagram CDN
+            $headers = [
+                'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                'Referer: https://www.instagram.com/',
+                'Accept: image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language: en-US,en;q=0.9',
+            ];
+            
+            // Add cookies if available (for Instagram CDN)
+            $cookiesPaths = $this->getInstagramCookiesPaths();
+            $cookiesPath = !empty($cookiesPaths) ? $cookiesPaths[0] : null;
+            
+            if ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
+                // Parse cookies from Netscape format
+                $cookiesContent = @file_get_contents($cookiesPath);
+                if ($cookiesContent) {
+                    $cookieLines = explode("\n", $cookiesContent);
+                    $cookiePairs = [];
+                    foreach ($cookieLines as $line) {
+                        $line = trim($line);
+                        if (empty($line) || str_starts_with($line, '#')) {
+                            continue;
+                        }
+                        // Netscape format: domain, flag, path, secure, expiration, name, value
+                        $parts = explode("\t", $line);
+                        if (count($parts) >= 7 && str_contains($parts[0], 'instagram.com')) {
+                            $cookiePairs[] = $parts[5] . '=' . $parts[6];
+                        }
+                    }
+                    if (!empty($cookiePairs)) {
+                        $headers[] = 'Cookie: ' . implode('; ', $cookiePairs);
+                        Log::debug('Added cookies to image download request', [
+                            'url' => substr($imageUrl, 0, 80) . '...',
+                            'cookies_count' => count($cookiePairs),
+                        ]);
+                    }
+                }
+            }
+            
             // Download using file_get_contents with context
             $context = stream_context_create([
                 'http' => [
                     'method' => 'GET',
-                    'header' => [
-                        'User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                        'Referer: https://www.instagram.com/',
-                    ],
+                    'header' => implode("\r\n", $headers),
                     'timeout' => 30,
                     'follow_location' => true,
                     'max_redirects' => 5,
@@ -2550,11 +2586,48 @@ class YtDlpService
             
             $imageData = @file_get_contents($imageUrl, false, $context);
             
+            // If file_get_contents fails, try with curl as fallback
             if ($imageData === false) {
-                Log::warning('Failed to download image from URL', [
-                    'url' => $imageUrl,
+                Log::debug('file_get_contents failed, trying curl', ['url' => substr($imageUrl, 0, 80) . '...']);
+                
+                $ch = curl_init($imageUrl);
+                
+                // Prepare curl headers (convert to array format)
+                $curlHeaders = [];
+                foreach ($headers as $header) {
+                    if (!str_starts_with($header, 'Cookie:')) {
+                        $curlHeaders[] = $header;
+                    }
+                }
+                
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_MAXREDIRS => 5,
+                    CURLOPT_TIMEOUT => 30,
+                    CURLOPT_USERAGENT => 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    CURLOPT_HTTPHEADER => $curlHeaders,
                 ]);
-                return null;
+                
+                // Add cookies if available (for Instagram CDN)
+                if ($cookiesPath && file_exists($cookiesPath) && str_contains($imageUrl, 'instagram.com')) {
+                    curl_setopt($ch, CURLOPT_COOKIEFILE, $cookiesPath);
+                    curl_setopt($ch, CURLOPT_COOKIEJAR, $cookiesPath);
+                }
+                
+                $imageData = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $curlError = curl_error($ch);
+                curl_close($ch);
+                
+                if ($imageData === false || $httpCode !== 200) {
+                    Log::warning('Failed to download image from URL (both file_get_contents and curl failed)', [
+                        'url' => $imageUrl,
+                        'http_code' => $httpCode,
+                        'curl_error' => $curlError,
+                    ]);
+                    return null;
+                }
             }
             
             // Verify it's actually an image
@@ -2562,6 +2635,7 @@ class YtDlpService
             if ($imageInfo === false) {
                 Log::warning('Downloaded data is not a valid image', [
                     'url' => $imageUrl,
+                    'data_length' => strlen($imageData),
                 ]);
                 return null;
             }
@@ -2575,10 +2649,11 @@ class YtDlpService
                 return null;
             }
             
-            Log::debug('Image downloaded from URL', [
-                'url' => $imageUrl,
-                'file_path' => $filePath,
+            Log::info('Image downloaded from URL successfully', [
+                'url' => substr($imageUrl, 0, 80) . '...',
+                'file_path' => basename($filePath),
                 'size' => filesize($filePath),
+                'dimensions' => $imageInfo[0] . 'x' . $imageInfo[1],
             ]);
             
             return $filePath;
@@ -2586,6 +2661,7 @@ class YtDlpService
             Log::error('Exception downloading image from URL', [
                 'url' => $imageUrl,
                 'error' => $e->getMessage(),
+                'trace' => substr($e->getTraceAsString(), 0, 500),
             ]);
             return null;
         }
