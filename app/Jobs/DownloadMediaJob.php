@@ -384,23 +384,6 @@ class DownloadMediaJob implements ShouldQueue
                 ]);
             }
 
-            // Delete "Downloading..." message after successfully sending media
-            if ($this->downloadingMessageId !== null) {
-                try {
-                    $telegramService->deleteMessage($this->chatId, $this->downloadingMessageId);
-                    Log::info('Downloading message deleted', [
-                        'chat_id' => $this->chatId,
-                        'downloading_message_id' => $this->downloadingMessageId,
-                    ]);
-                } catch (\Exception $deleteError) {
-                    Log::warning('Failed to delete downloading message', [
-                        'chat_id' => $this->chatId,
-                        'downloading_message_id' => $this->downloadingMessageId,
-                        'error' => $deleteError->getMessage(),
-                    ]);
-                }
-            }
-
             // If only videos were found, that's fine
             // If only images were found, that's fine
             // If neither, log warning and send error
