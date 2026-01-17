@@ -1769,6 +1769,24 @@ class YtDlpService
         $cookieContent = @file_get_contents($cookiesPath);
         $isNetscapeFormat = $cookieContent && (str_starts_with($cookieContent, '# Netscape HTTP Cookie File') || preg_match('/^#(?: Netscape| HttpOnly)/m', $cookieContent));
         $hasSessionId = $cookieContent && str_contains($cookieContent, 'sessionid');
+        $hasInstagramDomain = $cookieContent && preg_match('/\.instagram\.com|instagram\.com/i', $cookieContent);
+        
+        // Count Instagram cookies
+        $instagramCookieCount = 0;
+        if ($cookieContent) {
+            $lines = explode("\n", $cookieContent);
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line) || str_starts_with($line, '#')) {
+                    continue;
+                }
+                // Netscape format: domain\tflag\tpath\tsecure\texpiration\tname\tvalue
+                $parts = explode("\t", $line);
+                if (count($parts) >= 7 && str_contains(strtolower($parts[0]), 'instagram.com')) {
+                    $instagramCookieCount++;
+                }
+            }
+        }
         
         Log::debug('Using cookie file for Instagram video download', [
             'url' => $url,
@@ -1777,6 +1795,8 @@ class YtDlpService
             'cookie_size' => file_exists($cookiesPath) ? filesize($cookiesPath) : 0,
             'is_netscape_format' => $isNetscapeFormat,
             'has_sessionid' => $hasSessionId,
+            'has_instagram_domain' => $hasInstagramDomain,
+            'instagram_cookie_count' => $instagramCookieCount,
         ]);
         
         // Warn if cookie file doesn't look like Netscape format
@@ -1790,6 +1810,13 @@ class YtDlpService
         if (!$hasSessionId) {
             Log::warning('Cookie file missing sessionid (critical for Instagram authentication)', [
                 'cookie_path' => basename($cookiesPath),
+            ]);
+        }
+        
+        if (!$hasInstagramDomain || $instagramCookieCount === 0) {
+            Log::warning('Cookie file missing Instagram.com cookies (critical for authentication)', [
+                'cookie_path' => basename($cookiesPath),
+                'instagram_cookie_count' => $instagramCookieCount,
             ]);
         }
         
@@ -2357,6 +2384,24 @@ class YtDlpService
 
         $arguments[0] = $ytDlpPath;
 
+        // CRITICAL: Ensure cookie path is absolute for yt-dlp (it requires absolute paths)
+        // Replace relative cookie paths with absolute paths
+        $cookieIndex = array_search('--cookies', $arguments);
+        if ($cookieIndex !== false && isset($arguments[$cookieIndex + 1])) {
+            $cookiePath = $arguments[$cookieIndex + 1];
+            // Ensure absolute path
+            if (!str_starts_with($cookiePath, '/')) {
+                $cookiePath = base_path($cookiePath);
+            }
+            $cookiePath = realpath($cookiePath) ?: $cookiePath;
+            $arguments[$cookieIndex + 1] = $cookiePath;
+            
+            Log::debug('Cookie path ensured absolute for yt-dlp', [
+                'cookie_path' => $cookiePath,
+                'file_exists' => file_exists($cookiePath),
+            ]);
+        }
+        
         $process = new Process($arguments);
         $process->setTimeout($this->timeout);
         $process->setIdleTimeout($this->timeout);
