@@ -391,51 +391,105 @@ class TelegramService
     public function sendDocument(int|string $chatId, string $filePath, ?string $caption = null, ?int $replyToMessageId = null): bool
     {
         try {
+            Log::info('sendDocument called', [
+                'chat_id' => $chatId,
+                'file_path' => $filePath,
+                'file_exists' => file_exists($filePath),
+            ]);
+            
             // 1. File existence check
             if (!file_exists($filePath)) {
-                Log::error('Document file does not exist', ['path' => $filePath]);
+                Log::error('Document file does not exist', [
+                    'path' => $filePath,
+                    'chat_id' => $chatId,
+                ]);
                 return false;
             }
 
-            // 2. Check file size (Telegram limit: 50MB for documents)
+            // 2. Verify file is readable
+            if (!is_readable($filePath)) {
+                Log::error('Document file is not readable', [
+                    'path' => $filePath,
+                    'chat_id' => $chatId,
+                    'permissions' => substr(sprintf('%o', fileperms($filePath)), -4),
+                ]);
+                return false;
+            }
+
+            // 3. Check file size (Telegram limit: 50MB for documents)
             $fileSize = filesize($filePath);
             $maxFileSize = 50 * 1024 * 1024; // 50MB
+            
+            if ($fileSize === false || $fileSize <= 0) {
+                Log::error('Failed to get document file size', [
+                    'path' => $filePath,
+                    'chat_id' => $chatId,
+                ]);
+                return false;
+            }
             
             if ($fileSize > $maxFileSize) {
                 Log::warning('Document file too large for Telegram', [
                     'path' => $filePath,
                     'size' => $fileSize,
                     'size_mb' => round($fileSize / 1024 / 1024, 2),
+                    'chat_id' => $chatId,
                 ]);
                 return false;
             }
 
-            // 3. Convert webp to jpg ONLY (keep original size, no resize/crop)
+            // 4. Convert webp to jpg ONLY (keep original size, no resize/crop)
+            // IMPORTANT: WebP to JPG conversion preserves original quality (100%)
             $finalFilePath = $filePath;
             $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
             if ($extension === 'webp') {
-                Log::debug('Converting WebP to JPG before sending as document', ['path' => basename($filePath)]);
+                Log::debug('Converting WebP to JPG before sending as document (100% quality, no resize/crop)', [
+                    'path' => basename($filePath),
+                    'chat_id' => $chatId,
+                ]);
                 $convertedPath = $this->convertWebpToJpg($filePath);
                 if ($convertedPath !== null && file_exists($convertedPath)) {
                     $finalFilePath = $convertedPath;
-                    Log::info('Using converted JPG instead of WebP for document', [
+                    Log::info('Using converted JPG instead of WebP for document (original quality preserved)', [
                         'original' => basename($filePath),
                         'converted' => basename($convertedPath),
+                        'original_size' => $fileSize,
+                        'converted_size' => filesize($convertedPath),
+                        'chat_id' => $chatId,
                     ]);
                 } else {
                     Log::warning('Failed to convert webp to jpg, using original', [
                         'path' => $filePath,
                         'converted_path' => $convertedPath,
+                        'chat_id' => $chatId,
                     ]);
                     // Keep original path - Telegram might accept webp
                 }
             }
 
             // 4. Send document using file_get_contents (no resize/compress - original quality)
+            // IMPORTANT: sendDocument sends file as-is, preserving original quality (no crop/resize)
             try {
+                $fileContent = file_get_contents($finalFilePath);
+                if ($fileContent === false) {
+                    Log::error('Failed to read document file', [
+                        'path' => $finalFilePath,
+                        'file_exists' => file_exists($finalFilePath),
+                        'file_size' => file_exists($finalFilePath) ? filesize($finalFilePath) : null,
+                    ]);
+                    return false;
+                }
+                
+                Log::debug('Sending document to Telegram', [
+                    'chat_id' => $chatId,
+                    'file_path' => basename($finalFilePath),
+                    'file_size' => strlen($fileContent),
+                    'file_size_mb' => round(strlen($fileContent) / 1024 / 1024, 2),
+                ]);
+                
                 $response = Http::timeout(60)->attach(
                     'document',
-                    file_get_contents($finalFilePath),
+                    $fileContent,
                     basename($finalFilePath)
                 )->post("{$this->apiUrl}{$this->botToken}/sendDocument", [
                     'chat_id' => $chatId,
@@ -448,20 +502,38 @@ class TelegramService
                     $responseBody = $response->body();
                     $responseData = $response->json();
                     
-                    Log::error('Telegram API error', [
+                    Log::error('Telegram API error sending document', [
                         'method' => 'sendDocument',
                         'chat_id' => $chatId,
                         'status' => $response->status(),
                         'body' => $responseBody,
                         'response_data' => $responseData,
+                        'file_path' => basename($finalFilePath),
+                        'file_size' => strlen($fileContent),
                     ]);
+                    
+                    // Check for specific errors
+                    if (str_contains($responseBody, 'bot is not a member') || 
+                        str_contains($responseBody, 'chat not found') ||
+                        str_contains($responseBody, 'not enough rights') ||
+                        str_contains($responseBody, 'BOT_IS_NOT_A_MEMBER') ||
+                        str_contains($responseBody, 'CHAT_ADMIN_REQUIRED') ||
+                        str_contains($responseBody, 'can\'t send media messages')) {
+                        Log::error('Bot cannot send document in group - permission issue', [
+                            'chat_id' => $chatId,
+                            'error' => $responseBody,
+                            'solution' => 'Bot must be admin or have "Send Messages" permission in the group',
+                        ]);
+                    }
                     
                     return false;
                 }
 
-                Log::info('Document sent successfully', [
+                Log::info('Document sent successfully (file format, original quality preserved)', [
                     'chat_id' => $chatId,
                     'document' => basename($finalFilePath),
+                    'file_size' => strlen($fileContent),
+                    'file_size_mb' => round(strlen($fileContent) / 1024 / 1024, 2),
                 ]);
                 
                 return true;
