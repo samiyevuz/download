@@ -1896,7 +1896,9 @@ class YtDlpService
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
             '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
             '--output', $outputDir . '/%(title)s.%(ext)s',
-            '--format', 'best[ext=mp4]/best[ext=webm]/best',
+            // Use 'best' to auto-merge DASH video+audio streams for Instagram
+            // DASH formats (separate video/audio) are automatically combined by yt-dlp
+            '--format', 'best',
             // Do NOT use --quiet with cookies - it hides authentication errors
             // Do NOT use app_id with cookies - it may conflict with cookie authentication
             $url,
