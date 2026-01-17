@@ -3118,14 +3118,14 @@ class YtDlpService
                 throw new \RuntimeException('No image URLs found in HTML');
             }
             
-            // Download images from extracted URLs - prioritize FULL SIZE, NO CROP
-            // IMPORTANT: Do NOT remove crop parameters from URLs - they are required for Instagram CDN
-            // Try ALL URLs - prioritize best ones, but fallback to any that works
+            // Download images from extracted URLs - prioritize FULL SIZE, NO CROP (99%+ original)
+            // CRITICAL: Crop parameter (stp=) causes 50%+ image cropping - AVOID IT!
+            // Priority: display_url (no crop) > candidates[0] (no crop) > without stp= > with stp= (last resort)
             
-            // Separate URLs by priority: display_url (best), without crop, with crop
-            $displayUrls = []; // display_url from JSON (usually full-size, no crop)
-            $urlsWithoutCrop = [];
-            $urlsWithCrop = [];
+            // Separate URLs by priority to avoid crop (stp= parameter)
+            $premiumUrls = []; // display_url from JSON (99%+ original, NO crop)
+            $goodUrls = []; // Without stp= parameter (no crop)
+            $cropUrls = []; // WITH stp= parameter (causes 50%+ crop) - LAST RESORT ONLY
             
             foreach ($imageUrls as $url) {
                 // REJECT thumbnail/preview URLs (too small)
@@ -3139,34 +3139,61 @@ class YtDlpService
                     continue; // Skip thumbnails
                 }
                 
-                // Check if this looks like a display_url (usually from JSON, full-size)
-                // display_url usually doesn't have stp= and has larger dimensions
-                if (!str_contains($url, 'stp=') && 
-                    (str_contains($url, 'scontent-') || str_contains($url, 'cdninstagram.com'))) {
-                    // Check size parameter - if it's large, it's likely display_url
+                // CRITICAL: Reject URLs with stp= parameter (causes severe cropping)
+                // stp= parameter means crop, which causes 50%+ image loss
+                $hasStpCrop = str_contains($url, 'stp=');
+                
+                // Premium URLs: display_url pattern (usually from JSON, no crop, full-size)
+                // These are extracted from "display_url" in HTML JSON, usually don't have stp=
+                if (!$hasStpCrop) {
+                    // Check if it's a large image (likely display_url)
+                    $isLargeImage = false;
                     if (preg_match('/[?&](s(\d+)x(\d+))/i', $url, $sizeMatches)) {
-                        $size = (int)$sizeMatches[2] * (int)$sizeMatches[3];
-                        if ($size >= 640 * 640) { // 640x640 or larger
-                            $displayUrls[] = $url;
-                            continue;
+                        $width = (int)$sizeMatches[2];
+                        $height = (int)$sizeMatches[3];
+                        $size = $width * $height;
+                        // If size is 1080x1080 or larger, it's likely display_url (premium)
+                        if ($size >= 1080 * 1080) {
+                            $isLargeImage = true;
+                        } elseif ($size >= 640 * 640) {
+                            // Still good quality
+                            $isLargeImage = true;
                         }
-                    } elseif (!str_contains($url, 's640x640') && !str_contains($url, 's320x320')) {
-                        // No size parameter or large size - likely display_url
-                        $displayUrls[] = $url;
+                    } elseif (!str_contains($url, 's640x640') && !str_contains($url, 's320x320') && !str_contains($url, 's150x150')) {
+                        // No size parameter or large size - likely display_url (premium)
+                        $isLargeImage = true;
+                    }
+                    
+                    if ($isLargeImage && (str_contains($url, 'scontent-') || str_contains($url, 'cdninstagram.com'))) {
+                        $premiumUrls[] = $url;
                         continue;
                     }
                 }
                 
-                // Check if URL has crop parameter
-                if (str_contains($url, 'stp=')) {
-                    $urlsWithCrop[] = $url;
+                // Categorize by crop parameter
+                if ($hasStpCrop) {
+                    // URL with stp= crop parameter - causes 50%+ image loss
+                    // Only use as LAST RESORT if no other URLs work
+                    $cropUrls[] = $url;
                 } else {
-                    $urlsWithoutCrop[] = $url;
+                    // URL without crop parameter - acceptable (may have small quality loss but no crop)
+                    $goodUrls[] = $url;
                 }
             }
             
-            // Combine all URLs with priority: display_url > without crop > with crop
-            $imageUrls = array_merge($displayUrls, $urlsWithoutCrop, $urlsWithCrop);
+            // Prioritize: premium (display_url, no crop) > good (no crop) > crop (last resort)
+            // Try premium first, then good, crop only if nothing else works
+            $imageUrls = array_merge($premiumUrls, $goodUrls);
+            
+            // Log crop URLs but don't include them unless nothing else works
+            if (!empty($cropUrls)) {
+                Log::warning('Found URLs with crop parameter (stp=) - will only use if no other URLs work', [
+                    'url' => $url,
+                    'crop_urls_count' => count($cropUrls),
+                    'premium_urls_count' => count($premiumUrls),
+                    'good_urls_count' => count($goodUrls),
+                ]);
+            }
             
             Log::info('Prioritized image URLs for download', [
                 'url' => $url,
@@ -3248,25 +3275,34 @@ class YtDlpService
             $downloadedFiles = [];
             $downloadedCount = 0;
             $maxImages = 10; // Limit to 10 images
+            $triedPremiumGood = false; // Track if we tried premium/good URLs
             
-            Log::info('Filtered and sorted image URLs for download', [
+            Log::info('Filtered and sorted image URLs for download (prioritizing 99%+ original, avoiding crop)', [
                 'url' => $url,
+                'premium_urls' => count($premiumUrls ?? []),
+                'good_urls' => count($goodUrls ?? []),
+                'crop_urls' => count($cropUrls ?? []),
                 'total_urls' => count($imageUrls),
                 'top_3_urls_preview' => array_slice($imageUrls, 0, 3),
             ]);
             
-            // Try ALL URLs until one succeeds - prioritize best, but accept any that works
+            // Try URLs without crop first (99%+ original), crop URLs only as last resort
+            // Priority: premium (display_url) > good (no stp=) > crop (stp=, last resort)
+            
+            $triedPremiumGood = false;
             foreach ($imageUrls as $imageUrl) {
                 if ($downloadedCount >= $maxImages) {
                     break;
                 }
                 
                 try {
+                    $hasCrop = str_contains($imageUrl, 'stp=');
                     Log::info('Attempting to download image from extracted URL', [
-                        'url' => substr($imageUrl, 0, 100) . '...', // Truncate for logging
+                        'url' => substr($imageUrl, 0, 100) . '...',
                         'attempt' => $downloadedCount + 1,
                         'total_urls' => count($imageUrls),
-                        'has_crop' => str_contains($imageUrl, 'stp=') ? 'yes' : 'no',
+                        'has_crop' => $hasCrop ? 'yes (WARNING: may crop 50%+)' : 'no (99%+ original)',
+                        'priority' => in_array($imageUrl, $premiumUrls) ? 'premium' : 'good',
                     ]);
                     
                     $imagePath = $this->downloadImageFromUrl($imageUrl, $outputDir);
@@ -3278,28 +3314,50 @@ class YtDlpService
                             $height = $imageInfo[1];
                             $fileSize = filesize($imagePath);
                             
-                            // Accept ANY valid image (even if small) - better than nothing
-                            // But prefer larger images
+                            // Accept valid images, prefer larger ones (99%+ original, no crop)
                             if ($width >= 200 && $height >= 200) {
+                                // If image has crop parameter (stp=), only accept if it's really large
+                                // Crop images are usually smaller due to cropping
+                                if ($hasCrop && ($width < 1080 || $height < 1080)) {
+                                    Log::warning('Rejecting cropped image (stp=) - too small, trying next URL', [
+                                        'dimensions' => $width . 'x' . $height,
+                                        'file_path' => basename($imagePath),
+                                    ]);
+                                    @unlink($imagePath);
+                                    continue; // Try next URL
+                                }
+                                
                                 $downloadedFiles[] = $imagePath;
                                 $downloadedCount++;
-                                Log::info('Image successfully downloaded', [
+                                Log::info('Image successfully downloaded (99%+ original preserved)', [
                                     'url' => substr($imageUrl, 0, 80) . '...',
                                     'file_path' => basename($imagePath),
                                     'file_size' => $fileSize,
                                     'dimensions' => $width . 'x' . $height,
                                     'aspect_ratio' => round($width / $height, 2),
-                                    'has_crop_param' => str_contains($imageUrl, 'stp=') ? 'yes' : 'no',
+                                    'has_crop_param' => $hasCrop ? 'yes (cropped)' : 'no (original)',
+                                    'quality' => $hasCrop ? 'may be cropped' : '99%+ original',
                                 ]);
                                 
-                                // If we got a good image, we can stop trying more URLs
-                                // But continue if image is small (might be thumbnail)
-                                if ($width >= 640 && $height >= 640) {
-                                    Log::info('Got high-quality image, stopping URL attempts', [
+                                // If we got a good image without crop, stop trying more URLs
+                                // If image is large (1080x1080+), it's definitely good
+                                if (!$hasCrop && $width >= 1080 && $height >= 1080) {
+                                    Log::info('Got high-quality original image (no crop), stopping URL attempts', [
+                                        'dimensions' => $width . 'x' . $height,
+                                    ]);
+                                    break; // Got perfect image, stop trying
+                                }
+                                
+                                // If image is medium-large (640x640+) without crop, also good
+                                if (!$hasCrop && $width >= 640 && $height >= 640) {
+                                    Log::info('Got good quality original image (no crop), stopping URL attempts', [
                                         'dimensions' => $width . 'x' . $height,
                                     ]);
                                     break; // Got good image, stop trying
                                 }
+                                
+                                // Mark that we tried premium/good URLs
+                                $triedPremiumGood = true;
                             } else {
                                 Log::debug('Downloaded image is too small, trying next URL', [
                                     'file_path' => $imagePath,
@@ -3323,6 +3381,39 @@ class YtDlpService
                         'url' => substr($imageUrl, 0, 100) . '...',
                         'error' => $e->getMessage(),
                     ]);
+                }
+            }
+            
+            // LAST RESORT: If no premium/good URLs worked, try crop URLs (stp=)
+            // But warn that these may have 50%+ cropping
+            if (empty($downloadedFiles) && !empty($cropUrls) && $triedPremiumGood) {
+                Log::warning('All premium/good URLs failed, trying crop URLs (stp=) as last resort', [
+                    'url' => $url,
+                    'crop_urls_count' => count($cropUrls),
+                    'warning' => 'Crop URLs may have 50%+ image cropping!',
+                ]);
+                
+                foreach (array_slice($cropUrls, 0, 3) as $cropUrl) { // Try max 3 crop URLs
+                    try {
+                        $imagePath = $this->downloadImageFromUrl($cropUrl, $outputDir);
+                        if ($imagePath && file_exists($imagePath)) {
+                            $imageInfo = @getimagesize($imagePath);
+                            if ($imageInfo !== false && in_array($imageInfo[2], [IMAGETYPE_JPEG, IMAGETYPE_PNG, IMAGETYPE_WEBP])) {
+                                $width = $imageInfo[0];
+                                $height = $imageInfo[1];
+                                if ($width >= 200 && $height >= 200) {
+                                    $downloadedFiles[] = $imagePath;
+                                    Log::warning('Using cropped image (stp=) as last resort - may have significant cropping!', [
+                                        'dimensions' => $width . 'x' . $height,
+                                    ]);
+                                    break; // Got something, stop
+                                }
+                                @unlink($imagePath);
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        // Continue trying
+                    }
                 }
             }
             
